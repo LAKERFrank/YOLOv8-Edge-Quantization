@@ -3,7 +3,6 @@ torch>=2.1
 torchvision>=0.16
 onnx>=1.15
 onnxruntime>=1.18
-onnxruntime-tools>=1.8.1
 numpy
 opencv-python
 pyyaml
