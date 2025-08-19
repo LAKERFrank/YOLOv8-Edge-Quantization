@@ -20,6 +20,21 @@ except Exception:  # pragma: no cover - environment without libGL/cv2
 
     sys.modules['cv2'] = CV2Stub('cv2')
 
+try:  # provide a minimal sklearn stub if scikit-learn isn't available
+    import sklearn  # type: ignore  # noqa: F401
+except Exception:  # pragma: no cover - avoid optional dependency
+    import importlib.machinery as _machinery
+    skmod = types.ModuleType('sklearn')
+    metrics = types.ModuleType('metrics')
+    def _confusion_matrix(*args, **kwargs):
+        return None
+    metrics.confusion_matrix = _confusion_matrix
+    skmod.metrics = metrics
+    skmod.__spec__ = _machinery.ModuleSpec('sklearn', None)
+    metrics.__spec__ = _machinery.ModuleSpec('sklearn.metrics', None)
+    sys.modules['sklearn'] = skmod
+    sys.modules['sklearn.metrics'] = metrics
+
 # PyTorch >=2.6 defaults to weights_only=True, which breaks loading older checkpoints
 torch_load = torch.load
 def _torch_load(*args, **kwargs):
@@ -27,8 +42,13 @@ def _torch_load(*args, **kwargs):
     return torch_load(*args, **kwargs)
 torch.load = _torch_load
 
-def export_ultralytics(pt_path, onnx_path, imgsz, dynamic, channels):
+try:  # add_safe_globals was introduced in later PyTorch versions
     from torch.serialization import add_safe_globals
+except Exception:  # pragma: no cover - older torch without safety API
+    def add_safe_globals(*_args, **_kwargs):
+        return None
+
+def export_ultralytics(pt_path, onnx_path, imgsz, dynamic, channels):
     from ultralytics.nn.tasks import (ClassificationModel, DetectionModel, PoseModel,
                                       RTDETRDetectionModel, SegmentationModel)
     add_safe_globals([DetectionModel, SegmentationModel, PoseModel,
@@ -43,34 +63,43 @@ def export_ultralytics(pt_path, onnx_path, imgsz, dynamic, channels):
     print(f"[OK] Exported: {onnx_path}")
 
 def fallback_torch_export(pt_path, onnx_path, imgsz, input_name, dynamic, channels):
-    from torch.serialization import add_safe_globals
     from ultralytics.nn.tasks import (ClassificationModel, DetectionModel, PoseModel,
                                       RTDETRDetectionModel, SegmentationModel)
+    from ultralytics.yolo.utils.tal import make_anchors
+    from ultralytics import YOLO  # reuse loader without relying on Ultralytics export
     add_safe_globals([DetectionModel, SegmentationModel, PoseModel,
                       ClassificationModel, RTDETRDetectionModel])
-    from ultralytics import YOLO  # reuse loader without relying on Ultralytics export
     model = YOLO(pt_path)
     model.model.yaml['ch'] = channels
     mdl = model.model
+    dummy = torch.zeros(1, channels, imgsz, imgsz)
     # some task-specific heads expect a Detect.forward reference named `detect`
     # which can be missing when loading weights standalone
     if hasattr(mdl, "model") and len(mdl.model):
         last = mdl.model[-1]
-        if not hasattr(last, "detect") and last.__class__.__name__ == "Pose":
-            def _detect(self, x):
-                for i in range(self.nl):
-                    x[i] = torch.cat((self.cv2[i](x[i]), self.cv3[i](x[i])), 1)
-                if self.training:
-                    return x
-                bs = x[0].shape[0]
-                x_cat = torch.cat([xi.view(bs, self.no, -1) for xi in x], 2)
-                bbox, cls = x_cat.split((self.reg_max * 4, self.nc), 1)
-                bbox = self.dfl(bbox)
-                y = torch.cat((bbox, cls.sigmoid()), 1)
-                return (y, x)
-            last.detect = _detect
-    mdl.eval()
-    dummy = torch.zeros(1, channels, imgsz, imgsz)
+        if last.__class__.__name__ == "Pose":
+            if not hasattr(last, "detect"):
+                def _detect(self, x):
+                    for i in range(self.nl):
+                        x[i] = torch.cat((self.cv2[i](x[i]), self.cv3[i](x[i])), 1)
+                    if self.training:
+                        return x
+                    bs = x[0].shape[0]
+                    x_cat = torch.cat([xi.view(bs, self.no, -1) for xi in x], 2)
+                    bbox, cls = x_cat.split((self.reg_max * 4, self.nc), 1)
+                    bbox = self.dfl(bbox)
+                    y = torch.cat((bbox, cls.sigmoid()), 1)
+                    return (y, x)
+                last.detect = _detect
+            # Recompute anchors for keypoint heads to avoid shape mismatches
+            with torch.no_grad():
+                mdl.train()
+                feat_out = mdl(dummy)
+                feats = feat_out[0] if isinstance(feat_out, (list, tuple)) else feat_out
+                anchors, strides = make_anchors(feats, last.stride, 0.5)
+                last.anchors = anchors.transpose(0, 1)
+                last.strides = strides.transpose(0, 1)
+                mdl.eval()
     dyn = {input_name: {0: "batch"}} if dynamic else None
     torch.onnx.export(
         mdl, dummy, onnx_path,
