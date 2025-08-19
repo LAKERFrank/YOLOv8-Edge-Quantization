@@ -31,7 +31,10 @@ def export_ultralytics(pt_path, onnx_path, imgsz, dynamic, channels):
     print(f"[OK] Exported: {onnx_path}")
 
 def fallback_torch_export(pt_path, onnx_path, imgsz, input_name, dynamic, channels):
-    mdl = torch.load(pt_path, map_location="cpu", weights_only=False)
+    from ultralytics import YOLO  # reuse loader without relying on Ultralytics export
+    model = YOLO(pt_path)
+    model.model.yaml['ch'] = channels
+    mdl = model.model
     mdl.eval()
     dummy = torch.zeros(1, channels, imgsz, imgsz)
     dyn = {input_name: {0: "batch"}} if dynamic else None
