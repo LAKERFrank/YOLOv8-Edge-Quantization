@@ -43,6 +43,9 @@ try:  # pragma: no cover
 except Exception:  # pragma: no cover - minimal environments
     tv_stub = types.ModuleType("torchvision")
     tv_stub.__version__ = "0.0"
+    tv_stub.ops = types.SimpleNamespace(nms=lambda *a, **k: torch.zeros((0,), dtype=torch.int64))
+    tv_stub.datasets = types.SimpleNamespace(ImageFolder=object)
+    tv_stub.transforms = types.SimpleNamespace()
     sys.modules["torchvision"] = tv_stub
 
 from ultralytics import YOLO
@@ -57,9 +60,12 @@ def export_ultralytics(pt_path, onnx_path, imgsz, dynamic):
 
 def fallback_torch_export(pt_path, onnx_path, imgsz, input_name, dynamic):
     """Fallback ONNX export using torch.onnx.export directly."""
-    mdl = YOLO(pt_path).model.eval()
-    in_ch = mdl.model[0].conv.conv.in_channels
-    dummy = torch.zeros(1, in_ch, imgsz, imgsz)
+    ckpt = torch.load(pt_path, map_location="cpu", weights_only=False)
+    mdl = ckpt["model"].eval() if isinstance(ckpt, dict) else ckpt.eval()
+    mdl = mdl.float()
+    first = mdl.model[0]
+    in_ch = getattr(getattr(first, "conv", first), "in_channels")
+    dummy = torch.zeros(1, in_ch, imgsz, imgsz, dtype=next(mdl.parameters()).dtype)
     dyn = {input_name: {0: "batch"}} if dynamic else None
     torch.onnx.export(
         mdl, dummy, onnx_path,
