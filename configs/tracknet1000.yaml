@@ -1,11 +1,12 @@
 model_name: "tracknet1000"
 pt_path: "models/tracknet1000.pt"
 imgsz: 640
+channels: 10
 input_name: "images"
 letterbox_value: 114
 normalize: true
-mean: [0.0, 0.0, 0.0]
-std: [1.0, 1.0, 1.0]
+mean: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+std: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
 
 per_channel: true
 activation_dtype: "uint8"
