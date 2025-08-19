@@ -1,4 +1,50 @@
-import argparse, os, yaml, torch
+import argparse, os, sys, types, yaml, torch
+
+# Ensure the repository's custom ultralytics package (which contains TrackNet) is
+# importable even when a global ultralytics installation exists.
+REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ULTRA_DIR = os.path.join(REPO_DIR, "ultralytics")
+if ULTRA_DIR not in sys.path:
+    sys.path.insert(0, ULTRA_DIR)
+
+# Ultralytics unconditionally imports OpenCV.  In minimal environments this may
+# fail due to missing system libraries (e.g. libGL).  Stub a minimal module so
+# that model loading can proceed without a full OpenCV installation.
+try:  # pragma: no cover - best effort
+    import cv2  # noqa: F401
+except Exception:  # pragma: no cover - headless environments
+    class _CV2Stub:
+        IMREAD_COLOR = 1
+        IMREAD_GRAYSCALE = 0
+        def __getattr__(self, _):
+            return lambda *a, **k: None
+        setNumThreads = staticmethod(lambda *a, **k: None)
+        ocl = types.SimpleNamespace(setUseOpenCL=lambda *a, **k: None)
+    sys.modules["cv2"] = _CV2Stub()
+
+# Some TrackNet utilities require scikit-learn for metrics, but importing the
+# real package is unnecessary for ONNX export. Provide a tiny stub instead.
+try:  # pragma: no cover
+    import sklearn  # noqa: F401
+except Exception:  # pragma: no cover - minimal environments
+    metrics_stub = types.ModuleType("sklearn.metrics")
+    metrics_stub.confusion_matrix = lambda *a, **k: None
+    sklearn_stub = types.ModuleType("sklearn")
+    sklearn_stub.metrics = metrics_stub
+    sys.modules.update({
+        "sklearn": sklearn_stub,
+        "sklearn.metrics": metrics_stub,
+    })
+
+# TorchVision is also imported during model loading; provide a very small stub if
+# it is unavailable (common in minimal CPU-only environments).
+try:  # pragma: no cover
+    import torchvision  # noqa: F401
+except Exception:  # pragma: no cover - minimal environments
+    tv_stub = types.ModuleType("torchvision")
+    tv_stub.__version__ = "0.0"
+    sys.modules["torchvision"] = tv_stub
+
 from ultralytics import YOLO
 
 def export_ultralytics(pt_path, onnx_path, imgsz, dynamic):
@@ -10,14 +56,15 @@ def export_ultralytics(pt_path, onnx_path, imgsz, dynamic):
     print(f"[OK] Exported: {onnx_path}")
 
 def fallback_torch_export(pt_path, onnx_path, imgsz, input_name, dynamic):
-    mdl = torch.load(pt_path, map_location="cpu")
-    mdl.eval()
-    dummy = torch.zeros(1, 3, imgsz, imgsz)
+    """Fallback ONNX export using torch.onnx.export directly."""
+    mdl = YOLO(pt_path).model.eval()
+    in_ch = mdl.model[0].conv.conv.in_channels
+    dummy = torch.zeros(1, in_ch, imgsz, imgsz)
     dyn = {input_name: {0: "batch"}} if dynamic else None
     torch.onnx.export(
         mdl, dummy, onnx_path,
         input_names=[input_name], output_names=["output"],
-        opset_version=12, do_constant_folding=True, dynamic_axes=dyn
+        opset_version=12, do_constant_folding=True, dynamic_axes=dyn,
     )
     print(f"[OK] Exported (fallback): {onnx_path}")
 
