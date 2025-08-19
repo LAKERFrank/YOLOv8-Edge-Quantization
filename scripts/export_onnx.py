@@ -9,7 +9,7 @@ for p in (ROOT, PKG):
 
 try:  # provide a minimal cv2 stub if OpenCV isn't available
     import cv2  # type: ignore  # noqa: F401
-except Exception:  # pragma: no cover - environment without libGL/cv2
+except ImportError:  # pragma: no cover - environment without libGL/cv2
     class CV2Stub(types.ModuleType):
         __file__ = "cv2-stub"
         IMREAD_COLOR = 1
@@ -22,7 +22,7 @@ except Exception:  # pragma: no cover - environment without libGL/cv2
 
 try:  # provide a minimal sklearn stub if scikit-learn isn't available
     import sklearn  # type: ignore  # noqa: F401
-except Exception:  # pragma: no cover - avoid optional dependency
+except ImportError:  # pragma: no cover - avoid optional dependency
     import importlib.machinery as _machinery
     skmod = types.ModuleType('sklearn')
     metrics = types.ModuleType('metrics')
@@ -44,7 +44,7 @@ torch.load = _torch_load
 
 try:  # add_safe_globals was introduced in later PyTorch versions
     from torch.serialization import add_safe_globals
-except Exception:  # pragma: no cover - older torch without safety API
+except ImportError:  # pragma: no cover - older torch without safety API
     def add_safe_globals(*_args, **_kwargs):
         return None
 
@@ -113,7 +113,8 @@ if __name__ == "__main__":
     ap.add_argument("--cfg", required=True)
     ap.add_argument("--dynamic", action="store_true")
     args = ap.parse_args()
-    cfg = yaml.safe_load(open(args.cfg))
+    with open(args.cfg) as f:
+        cfg = yaml.safe_load(f)
     pt = cfg["pt_path"]; imgsz = int(cfg.get("imgsz", 640))
     channels = int(cfg.get("channels", 3))
     onnx_path = os.path.join("onnx", f"{cfg['model_name']}-fp32.onnx")
