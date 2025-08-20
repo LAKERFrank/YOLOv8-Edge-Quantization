@@ -1,0 +1,23 @@
+model_name: "tracknet1000"
+pt_path: "models/tracknet1000.pt"
+imgsz: 640
+input_name: "images"
+letterbox_value: 114
+normalize: true
+mean: [0.0, 0.0, 0.0]
+std: [1.0, 1.0, 1.0]
+
+per_channel: true
+activation_dtype: "uint8"
+weight_dtype: "int8"
+calibration_method: "percentile_999"
+calibration_images_dir: "calib"
+
+# Refine with actual node names after ONNX export
+nodes_to_exclude_substrings:
+  - "dfl"
+  - "heatmap"      # if head predicts heatmap-like output
+  - "head"         # last head convs near output
+  - "decode"       # decoder/argmax/softmax path
+  - "sigmoid"
+  - "nms"

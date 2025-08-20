@@ -1,0 +1,23 @@
+model_name: "yolov8n-pose"
+pt_path: "models/yolov8n-pose.pt"
+imgsz: 640
+input_name: "images"
+letterbox_value: 114
+normalize: true
+mean: [0.0, 0.0, 0.0]
+std: [1.0, 1.0, 1.0]
+
+# PTQ-Static (ORT)
+per_channel: true
+activation_dtype: "uint8"   # QUInt8
+weight_dtype: "int8"        # QInt8
+calibration_method: "percentile_999"   # minmax | entropy | percentile_999
+calibration_images_dir: "calib"
+
+# Refine after listing nodes with scripts/list_onnx_nodes.py
+nodes_to_exclude_substrings:
+  - "dfl"          # distribution focal regression parts
+  - "kpt"          # last keypoint head layers
+  - "pose"
+  - "decode"       # bbox/kpt decode
+  - "nms"          # postprocess
