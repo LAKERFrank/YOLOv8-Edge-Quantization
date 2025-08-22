@@ -1,5 +1,4 @@
 import argparse, os, glob, yaml, cv2, numpy as np, onnx
-from tqdm import tqdm
 from onnxruntime.quantization import (
     CalibrationDataReader, quantize_static, QuantType, CalibrationMethod
 )
@@ -19,7 +18,12 @@ def letterbox(im, new=640, color=114):
 
 class ImageCalibReader(CalibrationDataReader):
     def __init__(self, img_dir, input_name, size, norm, mean, std):
-        self.files = sorted(glob.glob(os.path.join(img_dir, "*.*")))
+        exts = ("*.jpg", "*.jpeg", "*.png", "*.bmp", "*.tif", "*.tiff")
+        self.files = []
+        for e in exts:
+            self.files.extend(glob.glob(os.path.join(img_dir, e)))
+        self.files.sort()
+
         self.i = 0
         self.input_name = input_name
         self.size = size
@@ -28,6 +32,12 @@ class ImageCalibReader(CalibrationDataReader):
         self.mean = np.array(mean).reshape(self.c, 1, 1)
         self.std = np.array(std).reshape(self.c, 1, 1)
         self.group = 1 if self.c in (1, 3) else self.c
+
+        if len(self.files) < self.group:
+            raise ValueError(
+                f"Expected at least {self.group} calibration image(s) in {img_dir}, "
+                f"found {len(self.files)}"
+            )
 
     def get_next(self):
         if self.i >= len(self.files):
