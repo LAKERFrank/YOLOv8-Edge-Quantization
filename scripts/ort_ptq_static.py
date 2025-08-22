@@ -87,11 +87,28 @@ if __name__ == "__main__":
     args = ap.parse_args()
 
     cfg = yaml.safe_load(open(args.cfg))
-    input_name = cfg.get("input_name","images")
-    size = int(cfg.get("imgsz",640))
+    input_name = cfg.get("input_name", "images")
+    size = int(cfg.get("imgsz", 640))
+
+    # Ensure normalization stats match model channel count
+    model = onnx.load(args.onnx_in)
+    dims = model.graph.input[0].type.tensor_type.shape.dim
+    model_c = dims[1].dim_value if len(dims) > 1 and dims[1].dim_value > 0 else len(cfg.get("mean", []))
+
+    mean = cfg.get("mean", [0.0] * model_c)
+    std = cfg.get("std", [1.0] * model_c)
+    if len(mean) != model_c or len(std) != model_c:
+        raise ValueError(
+            f"Model expects {model_c} channel(s) but cfg provides {len(mean)} mean and {len(std)} std entries"
+        )
+
     dr = ImageCalibReader(
-        img_dir=cfg["calibration_images_dir"], input_name=input_name, size=size,
-        norm=bool(cfg.get("normalize", True)), mean=cfg.get("mean",[0,0,0]), std=cfg.get("std",[1,1,1])
+        img_dir=cfg["calibration_images_dir"],
+        input_name=input_name,
+        size=size,
+        norm=bool(cfg.get("normalize", True)),
+        mean=mean,
+        std=std,
     )
 
     act_dt = QuantType.QUInt8 if cfg.get("activation_dtype","uint8")=="uint8" else QuantType.QInt8
