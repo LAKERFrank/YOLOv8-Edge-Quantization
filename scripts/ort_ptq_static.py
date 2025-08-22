@@ -100,11 +100,16 @@ if __name__ == "__main__":
     args = ap.parse_args()
 
     cfg = yaml.safe_load(open(args.cfg))
-    input_name = cfg.get("input_name","images")
-    size = int(cfg.get("imgsz",640))
+    input_name = cfg.get("input_name", "images")
+    size = int(cfg.get("imgsz", 640))
+
+    cfg_dir = os.path.dirname(args.cfg)
+    img_dir_cfg = cfg["calibration_images_dir"]
+    img_dir = img_dir_cfg if os.path.isabs(img_dir_cfg) else os.path.join(cfg_dir, img_dir_cfg)
+
     dr = ImageCalibReader(
-        img_dir=cfg["calibration_images_dir"], input_name=input_name, size=size,
-        norm=bool(cfg.get("normalize", True)), mean=cfg.get("mean",[0,0,0]), std=cfg.get("std",[1,1,1])
+        img_dir=img_dir, input_name=input_name, size=size,
+        norm=bool(cfg.get("normalize", True)), mean=cfg.get("mean", [0, 0, 0]), std=cfg.get("std", [1, 1, 1])
     )
 
     act_dt = QuantType.QUInt8 if cfg.get("activation_dtype","uint8")=="uint8" else QuantType.QInt8
