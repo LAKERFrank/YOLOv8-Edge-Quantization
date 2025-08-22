@@ -114,15 +114,23 @@ if __name__ == "__main__":
     if nodes_to_exclude:
         print("\n".join(nodes_to_exclude[:50]))
 
-    quantize_static(
+    # Older onnxruntime releases lack the ``optimize_model`` argument. Build a
+    # kwargs dict and append it only when supported to maintain compatibility.
+    qs_args = dict(
         model_input=args.onnx_in,
         model_output=args.onnx_out,
         calibration_data_reader=dr,
         per_channel=bool(cfg.get("per_channel", True)),
         activation_type=act_dt,
         weight_type=wt_dt,
-        optimize_model=True,
         calibrate_method=cali,
-        nodes_to_exclude=nodes_to_exclude
+        nodes_to_exclude=nodes_to_exclude,
     )
+
+    import inspect
+
+    if "optimize_model" in inspect.signature(quantize_static).parameters:
+        qs_args["optimize_model"] = True
+
+    quantize_static(**qs_args)
     print(f"[OK] INT8 model written to {args.onnx_out}")
