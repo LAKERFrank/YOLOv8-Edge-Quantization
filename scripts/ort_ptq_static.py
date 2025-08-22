@@ -29,8 +29,8 @@ class ImageCalibReader(CalibrationDataReader):
         self.size = size
         self.norm = norm
         self.c = len(mean)
-        self.mean = np.array(mean).reshape(self.c, 1, 1)
-        self.std = np.array(std).reshape(self.c, 1, 1)
+        self.mean = np.array(mean, dtype=np.float32).reshape(self.c, 1, 1)
+        self.std = np.array(std, dtype=np.float32).reshape(self.c, 1, 1)
         self.group = 1 if self.c in (1, 3) else self.c
 
         if len(self.files) < self.group:
@@ -65,10 +65,10 @@ class ImageCalibReader(CalibrationDataReader):
             img = np.stack(imgs, axis=0).astype(np.float32)
 
         if self.norm:
-            img /= 255.0
+            img /= np.float32(255.0)
             img = (img - self.mean) / self.std
 
-        return {self.input_name: np.expand_dims(img, 0)}
+        return {self.input_name: np.expand_dims(img, 0).astype(np.float32)}
 
 def build_exclude_list(onnx_path, substrings):
     m = onnx.load(onnx_path)
