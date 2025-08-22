@@ -103,9 +103,14 @@ if __name__ == "__main__":
     input_name = cfg.get("input_name", "images")
     size = int(cfg.get("imgsz", 640))
 
-    cfg_dir = os.path.dirname(args.cfg)
+    cfg_dir = os.path.dirname(os.path.abspath(args.cfg))
     img_dir_cfg = cfg["calibration_images_dir"]
-    img_dir = img_dir_cfg if os.path.isabs(img_dir_cfg) else os.path.join(cfg_dir, img_dir_cfg)
+    if os.path.isabs(img_dir_cfg):
+        img_dir = img_dir_cfg
+    elif os.path.isdir(img_dir_cfg):
+        img_dir = img_dir_cfg
+    else:
+        img_dir = os.path.join(cfg_dir, img_dir_cfg)
 
     dr = ImageCalibReader(
         img_dir=img_dir, input_name=input_name, size=size,
