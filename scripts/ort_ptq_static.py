@@ -28,6 +28,12 @@ class ImageCalibReader(CalibrationDataReader):
     """
 
     def __init__(self, img_dir, input_name, size, norm, mean, std):
+        if not os.path.isdir(img_dir):
+            raise FileNotFoundError(f"Calibration directory '{img_dir}' not found")
+
+        if len(mean) != len(std):
+            raise ValueError("mean and std must have the same length")
+
         self.files = sorted(glob.glob(os.path.join(img_dir, "*.*")))
         self.input_name = input_name
         self.size = size
@@ -37,6 +43,10 @@ class ImageCalibReader(CalibrationDataReader):
         self.std = np.array(std).reshape(self.c, 1, 1)
 
         self.group = 1 if self.c in (1, 3) else self.c
+        if len(self.files) < self.group:
+            raise ValueError(
+                f"Need at least {self.group} calibration image(s) in '{img_dir}', found {len(self.files)}"
+            )
         self.max_i = len(self.files) // self.group
         self.i = 0
 
