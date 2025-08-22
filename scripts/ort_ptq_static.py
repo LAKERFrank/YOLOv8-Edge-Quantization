@@ -108,7 +108,6 @@ if __name__ == "__main__":
         per_channel=bool(cfg.get("per_channel", True)),
         activation_type=act_dt,
         weight_type=wt_dt,
-        optimize_model=True,
         calibrate_method=cali,
         nodes_to_exclude=nodes_to_exclude
     )
