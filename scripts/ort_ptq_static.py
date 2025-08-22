@@ -7,11 +7,14 @@ from onnxruntime.quantization import (
 def letterbox(im, new=640, color=114):
     h, w = im.shape[:2]
     r = new / max(h, w)
-    nh, nw = int(round(h*r)), int(round(w*r))
+    nh, nw = int(round(h * r)), int(round(w * r))
     im = cv2.resize(im, (nw, nh), interpolation=cv2.INTER_LINEAR)
-    top, left = (new-nh)//2, (new-nw)//2
-    canvas = np.full((new, new, 3), color, dtype=im.dtype)
-    canvas[top:top+nh, left:left+nw] = im
+    top, left = (new - nh) // 2, (new - nw) // 2
+    if im.ndim == 2:
+        canvas = np.full((new, new), color, dtype=im.dtype)
+    else:
+        canvas = np.full((new, new, im.shape[2]), color, dtype=im.dtype)
+    canvas[top:top + nh, left:left + nw] = im
     return canvas
 
 class ImageCalibReader(CalibrationDataReader):
@@ -21,17 +24,40 @@ class ImageCalibReader(CalibrationDataReader):
         self.input_name = input_name
         self.size = size
         self.norm = norm
-        self.mean = np.array(mean).reshape(1,3,1,1)
-        self.std  = np.array(std).reshape(1,3,1,1)
+        self.c = len(mean)
+        self.mean = np.array(mean).reshape(self.c, 1, 1)
+        self.std = np.array(std).reshape(self.c, 1, 1)
+        self.group = 1 if self.c in (1, 3) else self.c
 
     def get_next(self):
-        if self.i >= len(self.files): return None
-        img = cv2.imread(self.files[self.i]); self.i += 1
-        img = letterbox(img, self.size)
-        img = img[:, :, ::-1].transpose(2,0,1).astype(np.float32)
+        if self.i >= len(self.files):
+            return None
+
+        if self.c == 3:
+            img = cv2.imread(self.files[self.i])
+            self.i += 1
+            img = letterbox(img, self.size)
+            img = img[:, :, ::-1].transpose(2, 0, 1).astype(np.float32)
+        elif self.c == 1:
+            img = cv2.imread(self.files[self.i], cv2.IMREAD_GRAYSCALE)
+            self.i += 1
+            img = letterbox(img, self.size)
+            img = np.expand_dims(img, 0).astype(np.float32)
+        else:  # stacked grayscale
+            if self.i + self.group > len(self.files):
+                return None
+            imgs = []
+            for _ in range(self.group):
+                im = cv2.imread(self.files[self.i], cv2.IMREAD_GRAYSCALE)
+                self.i += 1
+                im = letterbox(im, self.size)
+                imgs.append(im)
+            img = np.stack(imgs, axis=0).astype(np.float32)
+
         if self.norm:
             img /= 255.0
             img = (img - self.mean) / self.std
+
         return {self.input_name: np.expand_dims(img, 0)}
 
 def build_exclude_list(onnx_path, substrings):

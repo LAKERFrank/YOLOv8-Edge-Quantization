@@ -1,7 +1,6 @@
 model_name: "yolov8n-pose"
 pt_path: "models/yolov8n-pose.pt"
 imgsz: 640
-channels: 1
 input_name: "images"
 letterbox_value: 114
 normalize: true
