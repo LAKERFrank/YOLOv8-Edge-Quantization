@@ -1,7 +1,6 @@
 model_name: "tracknet1000"
 pt_path: "models/tracknet1000.pt"
 imgsz: 640
-channels: 10
 input_name: "images"
 letterbox_value: 114
 normalize: true
@@ -12,7 +11,7 @@ per_channel: true
 activation_dtype: "uint8"
 weight_dtype: "int8"
 calibration_method: "percentile_999"
-calibration_images_dir: "calib"
+calibration_images_dir: "ultralytics/ultralytics/assets"
 
 # Refine with actual node names after ONNX export
 nodes_to_exclude_substrings:

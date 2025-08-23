@@ -1,5 +1,4 @@
 import argparse, os, glob, yaml, cv2, numpy as np, onnx
-from tqdm import tqdm
 from onnxruntime.quantization import (
     CalibrationDataReader, quantize_static, QuantType, CalibrationMethod
 )
@@ -7,32 +6,69 @@ from onnxruntime.quantization import (
 def letterbox(im, new=640, color=114):
     h, w = im.shape[:2]
     r = new / max(h, w)
-    nh, nw = int(round(h*r)), int(round(w*r))
+    nh, nw = int(round(h * r)), int(round(w * r))
     im = cv2.resize(im, (nw, nh), interpolation=cv2.INTER_LINEAR)
-    top, left = (new-nh)//2, (new-nw)//2
-    canvas = np.full((new, new, 3), color, dtype=im.dtype)
-    canvas[top:top+nh, left:left+nw] = im
+    top, left = (new - nh) // 2, (new - nw) // 2
+    if im.ndim == 2:
+        canvas = np.full((new, new), color, dtype=im.dtype)
+    else:
+        canvas = np.full((new, new, im.shape[2]), color, dtype=im.dtype)
+    canvas[top:top + nh, left:left + nw] = im
     return canvas
 
 class ImageCalibReader(CalibrationDataReader):
     def __init__(self, img_dir, input_name, size, norm, mean, std):
-        self.files = sorted(glob.glob(os.path.join(img_dir, "*.*")))
+        exts = ("*.jpg", "*.jpeg", "*.png", "*.bmp", "*.tif", "*.tiff")
+        self.files = []
+        for e in exts:
+            self.files.extend(glob.glob(os.path.join(img_dir, e)))
+        self.files.sort()
+
         self.i = 0
         self.input_name = input_name
         self.size = size
         self.norm = norm
-        self.mean = np.array(mean).reshape(1,3,1,1)
-        self.std  = np.array(std).reshape(1,3,1,1)
+        self.c = len(mean)
+        self.mean = np.array(mean, dtype=np.float32).reshape(self.c, 1, 1)
+        self.std = np.array(std, dtype=np.float32).reshape(self.c, 1, 1)
+        self.group = 1 if self.c in (1, 3) else self.c
+
+        if len(self.files) < self.group:
+            raise ValueError(
+                f"Expected at least {self.group} calibration image(s) in {img_dir}, "
+                f"found {len(self.files)}"
+            )
 
     def get_next(self):
-        if self.i >= len(self.files): return None
-        img = cv2.imread(self.files[self.i]); self.i += 1
-        img = letterbox(img, self.size)
-        img = img[:, :, ::-1].transpose(2,0,1).astype(np.float32)
+        if self.i >= len(self.files):
+            return None
+
+        if self.c == 3:
+            img = cv2.imread(self.files[self.i])
+            self.i += 1
+            img = letterbox(img, self.size)
+            img = img[:, :, ::-1].transpose(2, 0, 1).astype(np.float32)
+        elif self.c == 1:
+            img = cv2.imread(self.files[self.i], cv2.IMREAD_GRAYSCALE)
+            self.i += 1
+            img = letterbox(img, self.size)
+            img = np.expand_dims(img, 0).astype(np.float32)
+        else:  # stacked grayscale
+            if self.i + self.group > len(self.files):
+                return None
+            imgs = []
+            for _ in range(self.group):
+                im = cv2.imread(self.files[self.i], cv2.IMREAD_GRAYSCALE)
+                self.i += 1
+                im = letterbox(im, self.size)
+                imgs.append(im)
+            img = np.stack(imgs, axis=0).astype(np.float32)
+
         if self.norm:
-            img /= 255.0
+            img /= np.float32(255.0)
             img = (img - self.mean) / self.std
-        return {self.input_name: np.expand_dims(img, 0)}
+
+        return {self.input_name: np.expand_dims(img, 0).astype(np.float32)}
 
 def build_exclude_list(onnx_path, substrings):
     m = onnx.load(onnx_path)
@@ -51,11 +87,28 @@ if __name__ == "__main__":
     args = ap.parse_args()
 
     cfg = yaml.safe_load(open(args.cfg))
-    input_name = cfg.get("input_name","images")
-    size = int(cfg.get("imgsz",640))
+    input_name = cfg.get("input_name", "images")
+    size = int(cfg.get("imgsz", 640))
+
+    # Ensure normalization stats match model channel count
+    model = onnx.load(args.onnx_in)
+    dims = model.graph.input[0].type.tensor_type.shape.dim
+    model_c = dims[1].dim_value if len(dims) > 1 and dims[1].dim_value > 0 else len(cfg.get("mean", []))
+
+    mean = cfg.get("mean", [0.0] * model_c)
+    std = cfg.get("std", [1.0] * model_c)
+    if len(mean) != model_c or len(std) != model_c:
+        raise ValueError(
+            f"Model expects {model_c} channel(s) but cfg provides {len(mean)} mean and {len(std)} std entries"
+        )
+
     dr = ImageCalibReader(
-        img_dir=cfg["calibration_images_dir"], input_name=input_name, size=size,
-        norm=bool(cfg.get("normalize", True)), mean=cfg.get("mean",[0,0,0]), std=cfg.get("std",[1,1,1])
+        img_dir=cfg["calibration_images_dir"],
+        input_name=input_name,
+        size=size,
+        norm=bool(cfg.get("normalize", True)),
+        mean=mean,
+        std=std,
     )
 
     act_dt = QuantType.QUInt8 if cfg.get("activation_dtype","uint8")=="uint8" else QuantType.QInt8
@@ -82,7 +135,6 @@ if __name__ == "__main__":
         per_channel=bool(cfg.get("per_channel", True)),
         activation_type=act_dt,
         weight_type=wt_dt,
-        optimize_model=True,
         calibrate_method=cali,
         nodes_to_exclude=nodes_to_exclude
     )
