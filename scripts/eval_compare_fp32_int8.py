@@ -3,15 +3,22 @@ import onnxruntime as ort
 from tqdm import tqdm
 
 def preprocess(path, imgsz, lb_val, norm, mean, std):
-    im = cv2.imread(path)
+    ch = max(len(mean), len(std))
+    flag = cv2.IMREAD_COLOR if ch == 3 else cv2.IMREAD_GRAYSCALE
+    im = cv2.imread(path, flag)
+    if im is None:
+        raise FileNotFoundError(path)
+    if flag == cv2.IMREAD_GRAYSCALE:
+        im = np.repeat(im[:, :, None], ch, axis=2)
     h, w = im.shape[:2]
     r = imgsz / max(h, w)
     nh, nw = int(round(h*r)), int(round(w*r))
     im_res = cv2.resize(im, (nw, nh), interpolation=cv2.INTER_LINEAR)
-    canvas = np.full((imgsz, imgsz, 3), lb_val, dtype=im.dtype)
+    canvas = np.full((imgsz, imgsz, ch), lb_val, dtype=im.dtype)
     top, left = (imgsz-nh)//2, (imgsz-nw)//2
     canvas[top:top+nh, left:left+nw] = im_res
-    img = canvas[:, :, ::-1].transpose(2,0,1).astype(np.float32)
+    img = canvas[:, :, ::-1] if ch == 3 else canvas
+    img = img.transpose(2,0,1).astype(np.float32)
     if norm:
         img /= 255.0
         mean_arr = np.array(mean, dtype=np.float32).reshape(-1, 1, 1)
