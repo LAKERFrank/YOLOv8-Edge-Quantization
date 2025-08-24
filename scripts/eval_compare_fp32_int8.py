@@ -14,7 +14,13 @@ def preprocess(path, imgsz, lb_val, norm, mean, std):
     img = canvas[:, :, ::-1].transpose(2,0,1).astype(np.float32)
     if norm:
         img /= 255.0
-        img = (img - np.array(mean).reshape(1,3,1,1)) / np.array(std).reshape(1,3,1,1)
+        mean_arr = np.array(mean, dtype=np.float32).reshape(-1, 1, 1)
+        std_arr = np.array(std, dtype=np.float32).reshape(-1, 1, 1)
+        if mean_arr.shape[0] != img.shape[0]:
+            mean_arr = np.resize(mean_arr, (img.shape[0], 1, 1))
+        if std_arr.shape[0] != img.shape[0]:
+            std_arr = np.resize(std_arr, (img.shape[0], 1, 1))
+        img = (img - mean_arr) / std_arr
     return img
 
 def run_session(onnx_path, input_name=None):
