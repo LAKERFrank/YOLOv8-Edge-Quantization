@@ -14,6 +14,8 @@ def preprocess(path, imgsz, lb_val, norm, mean, std):
     r = imgsz / max(h, w)
     nh, nw = int(round(h*r)), int(round(w*r))
     im_res = cv2.resize(im, (nw, nh), interpolation=cv2.INTER_LINEAR)
+    if im_res.ndim == 2:
+        im_res = im_res[:, :, None]
     canvas = np.full((imgsz, imgsz, ch), lb_val, dtype=im.dtype)
     top, left = (imgsz-nh)//2, (imgsz-nw)//2
     canvas[top:top+nh, left:left+nw] = im_res
