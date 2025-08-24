@@ -116,7 +116,11 @@ if __name__ == "__main__":
     with open(args.cfg) as f:
         cfg = yaml.safe_load(f)
     pt = cfg["pt_path"]; imgsz = int(cfg.get("imgsz", 640))
-    channels = int(cfg.get("channels", 3))
+    # infer input channels from config mean/std lists if not explicitly set
+    channels = cfg.get("channels")
+    if channels is None:
+        channels = len(cfg.get("mean", [])) or len(cfg.get("std", [])) or 3
+    channels = int(channels)
     onnx_path = os.path.join("onnx", f"{cfg['model_name']}-fp32.onnx")
     if channels != 3:
         print(f"[INFO] channels={channels} not supported by Ultralytics export. Using fallback...")
