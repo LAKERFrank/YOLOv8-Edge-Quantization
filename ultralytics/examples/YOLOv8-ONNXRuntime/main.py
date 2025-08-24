@@ -89,28 +89,23 @@ class Yolov8:
         Returns:
             image_data: Preprocessed image data ready for inference.
         """
-        # Read the input image using OpenCV
-        self.img = cv2.imread(self.input_image)
+        # Read the input image and ensure channel count matches the model
+        if self.input_channels == 1:
+            self.img = cv2.imread(self.input_image, cv2.IMREAD_GRAYSCALE)
+            self.img_height, self.img_width = self.img.shape[:2]
+            img = cv2.resize(self.img, (self.input_width, self.input_height))
+            img = img[:, :, None]  # restore channel axis
+        else:
+            self.img = cv2.imread(self.input_image)
+            self.img_height, self.img_width = self.img.shape[:2]
+            img = cv2.cvtColor(self.img, cv2.COLOR_BGR2RGB)
+            img = cv2.resize(img, (self.input_width, self.input_height))
 
-        # Get the height and width of the input image
-        self.img_height, self.img_width = self.img.shape[:2]
-
-        # Convert the image color space from BGR to RGB
-        img = cv2.cvtColor(self.img, cv2.COLOR_BGR2RGB)
-
-        # Resize the image to match the input shape
-        img = cv2.resize(img, (self.input_width, self.input_height))
-
-        # Normalize the image data by dividing it by 255.0
-        image_data = np.array(img) / 255.0
-
-        # Transpose the image to have the channel dimension as the first dimension
-        image_data = np.transpose(image_data, (2, 0, 1))  # Channel first
-
-        # Expand the dimensions of the image data to match the expected input shape
+        # Normalize to 0-1 and convert to channel-first layout
+        image_data = img.astype(np.float32) / 255.0
+        image_data = np.transpose(image_data, (2, 0, 1))  # (C,H,W)
         image_data = np.expand_dims(image_data, axis=0).astype(np.float32)
 
-        # Return the preprocessed image data
         return image_data
 
     def postprocess(self, input_image, output):
@@ -210,6 +205,8 @@ class Yolov8:
         input_shape = model_inputs[0].shape
         self.input_width = input_shape[-1]
         self.input_height = input_shape[-2]
+        ch = input_shape[-3] if len(input_shape) >= 3 else None
+        self.input_channels = ch if isinstance(ch, int) and ch > 0 else 3
 
         # Preprocess the image data
         img_data = self.preprocess()
