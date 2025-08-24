@@ -6,6 +6,7 @@ import cv2
 import numpy as np
 import onnxruntime as ort
 import torch
+import logging
 
 # Allow running the example without installing the package by manually
 # adding the repository root to the Python path. This lets users execute the
@@ -17,6 +18,10 @@ if str(REPO_ROOT) not in sys.path:
 
 from ultralytics.yolo.utils import ROOT, yaml_load
 from ultralytics.yolo.utils.checks import check_requirements, check_yaml
+
+
+logging.basicConfig(level=logging.INFO)
+LOGGER = logging.getLogger(__name__)
 
 
 class Yolov8:
@@ -130,6 +135,7 @@ class Yolov8:
         boxes = []
         scores = []
         class_ids = []
+        keypoints_list = []
 
         # Calculate the scaling factors for the bounding box coordinates
         x_factor = self.img_width / self.input_width
@@ -161,16 +167,27 @@ class Yolov8:
                 class_ids.append(class_id)
                 scores.append(score)
                 boxes.append([left, top, width, height])
+                keypoints_list.append(keypoints)
 
         # Apply non-maximum suppression to filter out overlapping bounding boxes
         indices = cv2.dnn.NMSBoxes(boxes, scores, self.confidence_thres, self.iou_thres)
 
         # Iterate over the selected indices after non-maximum suppression
         for i in indices:
-            # Get the box, score, and class ID corresponding to the index
+            # Get the box, score, class ID, and keypoints corresponding to the index
             box = boxes[i]
             score = scores[i]
             class_id = class_ids[i]
+            keypoints = keypoints_list[i]
+
+            # Log detection details for debugging/inspection
+            LOGGER.info(
+                "Detection - class_id: %d, score: %.2f, box: %s, keypoints: %s",
+                class_id,
+                score,
+                box,
+                keypoints.tolist(),
+            )
 
             # Draw the detection on the input image
             self.draw_detections(input_image, box, score, class_id)
