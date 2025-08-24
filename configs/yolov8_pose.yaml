@@ -4,8 +4,8 @@ imgsz: 640
 input_name: "images"
 letterbox_value: 114
 normalize: true
-mean: [0.0]
-std: [1.0]
+mean: [0.0, 0.0, 0.0]
+std: [1.0, 1.0, 1.0]
 
 # PTQ-Static (ORT)
 per_channel: true
