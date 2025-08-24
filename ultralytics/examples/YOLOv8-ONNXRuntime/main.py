@@ -132,16 +132,13 @@ class Yolov8:
 
         # Iterate over each row in the outputs array
         for i in range(rows):
-            # Extract the class scores from the current row
-            classes_scores = outputs[i][4:]
+            # Extract the detection score for the single-class pose model
+            score = outputs[i][4]
 
-            # Find the maximum score among the class scores
-            max_score = np.amax(classes_scores)
-
-            # If the maximum score is above the confidence threshold
-            if max_score >= self.confidence_thres:
-                # Get the class ID with the highest score
-                class_id = np.argmax(classes_scores)
+            # If the detection score meets the confidence threshold
+            if score >= self.confidence_thres:
+                # Pose models have a single class (e.g., 'person')
+                class_id = 0
 
                 # Extract the bounding box coordinates from the current row
                 x, y, w, h = outputs[i][0], outputs[i][1], outputs[i][2], outputs[i][3]
@@ -154,8 +151,10 @@ class Yolov8:
 
                 # Add the class ID, score, and box coordinates to the respective lists
                 class_ids.append(class_id)
-                scores.append(max_score)
+                scores.append(score)
                 boxes.append([left, top, width, height])
+
+                # Optional: parse outputs[i][5:] for keypoints if needed
 
         # Apply non-maximum suppression to filter out overlapping bounding boxes
         indices = cv2.dnn.NMSBoxes(boxes, scores, self.confidence_thres, self.iou_thres)
