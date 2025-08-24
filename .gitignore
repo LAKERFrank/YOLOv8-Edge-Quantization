@@ -1,0 +1,8 @@
+# dataset
+*.jpg
+
+# dir
+/onnx/
+/out/
+
+
