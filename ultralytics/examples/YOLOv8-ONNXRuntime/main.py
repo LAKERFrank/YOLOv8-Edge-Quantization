@@ -232,6 +232,8 @@ if __name__ == '__main__':
     parser.add_argument('--img', type=str, default=str(ROOT / 'assets/bus.jpg'), help='Path to input image.')
     parser.add_argument('--conf-thres', type=float, default=0.5, help='Confidence threshold')
     parser.add_argument('--iou-thres', type=float, default=0.5, help='NMS IoU threshold')
+    parser.add_argument('--save', type=str, default='', help='Optional path to save the output image')
+    parser.add_argument('--show', action='store_true', help='Display the output image in a window')
     args = parser.parse_args()
 
     # Check the requirements and select the appropriate backend (CPU or GPU)
@@ -243,9 +245,13 @@ if __name__ == '__main__':
     # Perform object detection and obtain the output image
     output_image = detection.main()
 
-    # Display the output image in a window
-    cv2.namedWindow('Output', cv2.WINDOW_NORMAL)
-    cv2.imshow('Output', output_image)
+    # Optionally save the output image
+    if args.save:
+        cv2.imwrite(args.save, output_image)
+        print(f"Saved output image to {args.save}")
 
-    # Wait for a key press to exit
-    cv2.waitKey(0)
+    # Optionally display the output image (requires GUI support)
+    if args.show:
+        cv2.namedWindow('Output', cv2.WINDOW_NORMAL)
+        cv2.imshow('Output', output_image)
+        cv2.waitKey(0)

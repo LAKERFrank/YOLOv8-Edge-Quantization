@@ -37,7 +37,9 @@ pip install onnxruntime
 After successfully installing the required packages, you can run the YOLOv8 implementation using the following command:
 
 ```bash
-python main.py --model yolov8n.onnx --img image.jpg --conf-thres 0.5 --iou-thres 0.5
+python main.py --model yolov8n.onnx --img image.jpg --conf-thres 0.5 --iou-thres 0.5 --save result.jpg
 ```
 
 Make sure to replace yolov8n.onnx with the path to your YOLOv8 ONNX model file, image.jpg with the path to your input image, and adjust the confidence threshold (conf-thres) and IoU threshold (iou-thres) values as needed.
+
+Use `--save <path>` to write the annotated image to disk and `--show` to display it in a window (requires GUI support).
