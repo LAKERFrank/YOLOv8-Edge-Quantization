@@ -40,11 +40,24 @@ python scripts/eval_compare_fp32_int8.py --cfg configs/yolov8_pose.yaml --fp32 o
 python scripts/eval_compare_fp32_int8.py --cfg configs/tracknet1000.yaml --fp32 onnx/tracknet1000-fp32.onnx --int8 onnx/tracknet1000-int8.onnx --valdir val/track
 ```
 
+#### 評估結果解讀
+- `SPEED`：顯示 FP32 與 INT8 模型的平均推論時間與速度提升倍率。
+- `CONSISTENCY`：`mean relative L2 diff` 表示兩模型輸出差異，數值越小越好。參考範圍：
+  - < 1%：幾乎無損
+  - 1%–2%：精度損失極小
+  - 2%–5%：需視任務需求評估
+  - > 5%：建議調整量化策略或進行 QAT
+
+當 `mean relative L2 diff` 高於可接受範圍或任務精度顯著下降時，建議執行下列 QAT 流程。
+
 ### 7. 精度掉太多時，可嘗試 Head-only QAT
 ```bash
 python scripts/qat_head_minimal.py --pt models/yolov8n-pose.pt --include kpt dfl head --epochs 5
 ```
-如有需要，重新匯出 ONNX 並再跑一次 PTQ。
+完成 QAT 後請依下列步驟重新產生 INT8 模型：
+1. 重新匯出 ONNX（`scripts/export_onnx.py`）
+2. 依步驟 4~5 進行校正量化
+3. 重新執行步驟 6 以確認速度與輸出一致性
 
 ## 其他注意事項
 - 預設：權重為每通道 INT8，活化值為每張量 UINT8。
