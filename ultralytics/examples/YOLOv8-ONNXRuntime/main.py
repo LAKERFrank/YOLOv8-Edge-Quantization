@@ -190,22 +190,33 @@ class Yolov8:
         Returns:
             output_img: The output image with drawn detections.
         """
-        # Create an inference session using the ONNX model and specify execution providers
+        # Create an inference session using the ONNX model. Try CUDA if available,
+        # but gracefully fall back to CPU when the required GPU libraries are missing.
         providers = ['CPUExecutionProvider']
-        if 'CUDAExecutionProvider' in ort.get_available_providers():
+        if torch.cuda.is_available():
             providers.insert(0, 'CUDAExecutionProvider')
-        session = ort.InferenceSession(self.onnx_model, providers=providers)
+        try:
+            session = ort.InferenceSession(self.onnx_model, providers=providers)
+        except Exception as e:  # e.g., missing CUDA libraries
+            print(f"CUDAExecutionProvider unavailable: {e}. Falling back to CPU.")
+            session = ort.InferenceSession(self.onnx_model, providers=['CPUExecutionProvider'])
 
         # Get the model inputs
         model_inputs = session.get_inputs()
 
-        # Store the shape of the input for later use
+        # Store the shape of the input for later use. The last two dimensions are
+        # width and height regardless of whether the model expects 4D [N,C,H,W]
+        # or 5D [N,?,C,H,W] tensors (e.g., some pose models).
         input_shape = model_inputs[0].shape
-        self.input_width = input_shape[2]
-        self.input_height = input_shape[3]
+        self.input_width = input_shape[-1]
+        self.input_height = input_shape[-2]
 
         # Preprocess the image data
         img_data = self.preprocess()
+
+        # If the model expects a 5D tensor, insert the extra dimension
+        if len(input_shape) == 5:
+            img_data = np.expand_dims(img_data, axis=1)
 
         # Run inference using the preprocessed image data
         outputs = session.run(None, {model_inputs[0].name: img_data})
