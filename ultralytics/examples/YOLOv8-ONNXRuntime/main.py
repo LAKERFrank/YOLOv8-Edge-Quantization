@@ -1,9 +1,19 @@
 import argparse
+import sys
+from pathlib import Path
 
 import cv2
 import numpy as np
 import onnxruntime as ort
 import torch
+
+# Allow running the example without installing the package by manually
+# adding the repository root to the Python path. This lets users execute the
+# script directly with ``python examples/...`` without ``export PYTHONPATH``.
+FILE = Path(__file__).resolve()
+REPO_ROOT = FILE.parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.append(str(REPO_ROOT))
 
 from ultralytics.yolo.utils import ROOT, yaml_load
 from ultralytics.yolo.utils.checks import check_requirements, check_yaml
@@ -181,7 +191,10 @@ class Yolov8:
             output_img: The output image with drawn detections.
         """
         # Create an inference session using the ONNX model and specify execution providers
-        session = ort.InferenceSession(self.onnx_model, providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
+        providers = ['CPUExecutionProvider']
+        if 'CUDAExecutionProvider' in ort.get_available_providers():
+            providers.insert(0, 'CUDAExecutionProvider')
+        session = ort.InferenceSession(self.onnx_model, providers=providers)
 
         # Get the model inputs
         model_inputs = session.get_inputs()
