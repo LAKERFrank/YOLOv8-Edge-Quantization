@@ -56,7 +56,7 @@ def export_ultralytics(pt_path, onnx_path, imgsz, dynamic, channels):
     from ultralytics import YOLO  # import lazily to avoid cv2 dependency when unused
     model = YOLO(pt_path)
     model.model.yaml['ch'] = channels
-    model.export(format="onnx", imgsz=imgsz, dynamic=dynamic, opset=12, simplify=True)
+    model.export(format="onnx", imgsz=imgsz, dynamic=dynamic, opset=13, simplify=True)
     default = os.path.splitext(pt_path)[0] + ".onnx"
     os.makedirs(os.path.dirname(onnx_path), exist_ok=True)
     os.replace(default, onnx_path)
@@ -104,7 +104,7 @@ def fallback_torch_export(pt_path, onnx_path, imgsz, input_name, dynamic, channe
     torch.onnx.export(
         mdl, dummy, onnx_path,
         input_names=[input_name], output_names=["output"],
-        opset_version=12, do_constant_folding=True, dynamic_axes=dyn
+        opset_version=13, do_constant_folding=True, dynamic_axes=dyn
     )
     print(f"[OK] Exported (fallback): {onnx_path}")
 
