@@ -110,7 +110,8 @@ class Yolov8:
 
     def postprocess(self, input_image, output):
         """
-        Performs post-processing on the model's output to extract bounding boxes, scores, and class IDs.
+        Performs post-processing on the model's output to extract predictions and draw them on the
+        input image. Supports both object detection and pose estimation models.
 
         Args:
             input_image (numpy.ndarray): The input image.
@@ -123,60 +124,102 @@ class Yolov8:
         # Transpose and squeeze the output to match the expected shape
         outputs = np.transpose(np.squeeze(output[0]))
 
-        # Get the number of rows in the outputs array
+        # Determine if the model is a pose model. Pose models have 5 box/objectness
+        # values followed by 3 values for each keypoint (x, y, confidence).
+        num_cols = outputs.shape[1]
+        is_pose = (num_cols - 5) % 3 == 0 and num_cols < 70
+
         rows = outputs.shape[0]
 
-        # Lists to store the bounding boxes, scores, and class IDs of the detections
-        boxes = []
-        scores = []
-        class_ids = []
-
-        # Calculate the scaling factors for the bounding box coordinates
+        # Calculate the scaling factors for the coordinates
         x_factor = self.img_width / self.input_width
         y_factor = self.img_height / self.input_height
 
-        # Iterate over each row in the outputs array
+        if is_pose:
+            num_kpts = (num_cols - 5) // 3
+            boxes, scores, kpts = [], [], []
+
+            for i in range(rows):
+                score = outputs[i][4]
+                if score >= self.confidence_thres:
+                    x, y, w, h = outputs[i][:4]
+                    left = int((x - w / 2) * x_factor)
+                    top = int((y - h / 2) * y_factor)
+                    width = int(w * x_factor)
+                    height = int(h * y_factor)
+
+                    keypoints = outputs[i][5:].reshape(num_kpts, 3)
+                    keypoints[:, 0] *= x_factor
+                    keypoints[:, 1] *= y_factor
+
+                    boxes.append([left, top, width, height])
+                    scores.append(float(score))
+                    kpts.append(keypoints)
+
+            indices = cv2.dnn.NMSBoxes(boxes, scores, self.confidence_thres, self.iou_thres)
+
+            # Pose models usually predict only "person"
+            self.classes = ['person']
+            self.color_palette = np.random.uniform(0, 255, size=(len(self.classes), 3))
+
+            for idx in np.array(indices).flatten():
+                box = boxes[idx]
+                score = scores[idx]
+                keypoints = kpts[idx]
+                self.draw_detections(input_image, box, score, 0)
+                self.draw_keypoints(input_image, keypoints)
+
+            return input_image
+
+        # Detection model path
+        boxes, scores, class_ids = [], [], []
+
         for i in range(rows):
-            # Extract the class scores from the current row
             classes_scores = outputs[i][4:]
-
-            # Find the maximum score among the class scores
             max_score = np.amax(classes_scores)
-
-            # If the maximum score is above the confidence threshold
             if max_score >= self.confidence_thres:
-                # Get the class ID with the highest score
                 class_id = np.argmax(classes_scores)
-
-                # Extract the bounding box coordinates from the current row
-                x, y, w, h = outputs[i][0], outputs[i][1], outputs[i][2], outputs[i][3]
-
-                # Calculate the scaled coordinates of the bounding box
+                x, y, w, h = outputs[i][:4]
                 left = int((x - w / 2) * x_factor)
                 top = int((y - h / 2) * y_factor)
                 width = int(w * x_factor)
                 height = int(h * y_factor)
-
-                # Add the class ID, score, and box coordinates to the respective lists
                 class_ids.append(class_id)
                 scores.append(max_score)
                 boxes.append([left, top, width, height])
 
-        # Apply non-maximum suppression to filter out overlapping bounding boxes
         indices = cv2.dnn.NMSBoxes(boxes, scores, self.confidence_thres, self.iou_thres)
 
-        # Iterate over the selected indices after non-maximum suppression
-        for i in indices:
-            # Get the box, score, and class ID corresponding to the index
-            box = boxes[i]
-            score = scores[i]
-            class_id = class_ids[i]
-
-            # Draw the detection on the input image
+        for idx in np.array(indices).flatten():
+            box = boxes[idx]
+            score = scores[idx]
+            class_id = class_ids[idx]
             self.draw_detections(input_image, box, score, class_id)
 
-        # Return the modified input image
         return input_image
+
+    # Pose drawing ---------------------------------------------------------
+    def draw_keypoints(self, img, kpts):
+        """Draws keypoints and skeleton on the image."""
+        skeleton = [
+            (15, 13), (13, 11), (16, 14), (14, 12), (11, 12), (5, 11),
+            (6, 12), (5, 6), (5, 7), (7, 9), (6, 8), (8, 10),
+            (1, 2), (0, 1), (0, 2), (1, 3), (2, 4), (3, 5), (4, 6)
+        ]
+
+        for x, y, conf in kpts:
+            if conf > self.confidence_thres:
+                cv2.circle(img, (int(x), int(y)), 3, (0, 255, 0), -1)
+
+        for a, b in skeleton:
+            if kpts[a][2] > self.confidence_thres and kpts[b][2] > self.confidence_thres:
+                cv2.line(
+                    img,
+                    (int(kpts[a][0]), int(kpts[a][1])),
+                    (int(kpts[b][0]), int(kpts[b][1])),
+                    (0, 255, 0),
+                    2,
+                )
 
     def main(self):
         """
