@@ -3,6 +3,13 @@
 本專案提供 `YOLOv8-Pose` 與 `TrackNet1000`（基於 YOLOv8 的單球追蹤器）的 ONNX 匯出與 ONNX Runtime INT8 後訓練量化，亦可選擇進行僅 head 的 QAT 或使用 TensorRT。
 ## 執行步驟
 
+### 0. 設定 Python Path（必須先執行）
+在執行任何以下指令前，請先將專案根目錄加入 `PYTHONPATH`，以確保腳本能正確匯入 `ultralytics` 模組：
+
+```bash
+export PYTHONPATH="$PWD/ultralytics:$PYTHONPATH"
+```
+
 ### 1. 安裝依賴
 ```bash
 pip install -r requirements.txt

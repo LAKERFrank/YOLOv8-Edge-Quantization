@@ -2,6 +2,14 @@
 
 This project implements YOLOv8 using ONNX Runtime.
 
+## Setup
+
+Before installing dependencies or running the example, ensure the repository's `ultralytics` package is on the Python path. From the repository root, run the following command **once per shell session**:
+
+```bash
+export PYTHONPATH="$PWD/ultralytics:$PYTHONPATH"
+```
+
 ## Installation
 
 To run this project, you need to install the required dependencies. The following instructions will guide you through the installation process.
