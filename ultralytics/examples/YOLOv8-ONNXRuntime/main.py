@@ -42,6 +42,8 @@ class Yolov8:
 
         # Generate a color palette for potential box drawing
         self.color_palette = np.random.uniform(0, 255, size=(len(self.classes), 3))
+        # Will be set after inspecting model outputs
+        self.normalized = False
 
     def draw_detections(self, img, box, score, class_id):
         """Draw a bounding box and label for a detected object."""
@@ -70,24 +72,33 @@ class Yolov8:
         self.stride_tensor = np.concatenate(strides).astype(np.float32)
 
     def decode_anchor(self, row, anchor_point, stride):
-        """Decode a single 56-value model output row using YOLOv8's rules."""
-        row = 1 / (1 + np.exp(-row))
+        """Decode a single 56-value model output row using YOLOv8's rules.
+
+        ``self.normalized`` is determined from the raw model outputs. If the
+        model already emits values in [0, 1], a second sigmoid would push every
+        coordinate toward 1.0 and collapse keypoints. In that case we skip the
+        sigmoid here.
+        """
+
+        if not self.normalized:
+            row = 1 / (1 + np.exp(-row))
 
         # Decode box center and size
         xy = (row[:2] * 2 - 0.5 + anchor_point) * stride
         wh = (row[2:4] * 2) ** 2 * stride
         score = row[4]
 
-        # Decode keypoints
+        # Decode keypoints relative to the decoded box center
         kpts = row[5:].reshape(-1, 3)
-        kpt_xy = (kpts[:, :2] * 2 - 0.5 + anchor_point) * stride
-        keypoints = []
-        for (kx, ky), kc in zip(kpt_xy, kpts[:, 2]):
-            keypoints.append((
+        kpt_xy = (kpts[:, :2] * 2 - 0.5) * stride + xy
+        keypoints = [
+            (
                 kx * self.img_width / self.input_width,
                 ky * self.img_height / self.input_height,
                 kc,
-            ))
+            )
+            for (kx, ky), kc in zip(kpt_xy, kpts[:, 2])
+        ]
 
         # Convert to top-left corner xywh and scale to image size
         x1y1 = xy - wh / 2
@@ -208,10 +219,14 @@ class Yolov8:
         # Prepare anchors for decoding
         self._make_anchors()
 
+        # Inspect raw outputs to determine whether sigmoid has already been applied
+        raw = np.transpose(np.squeeze(outputs[0]))
+        self.normalized = bool(np.all((raw >= 0) & (raw <= 1)))
+
         # Optionally decode and print a few raw output rows for debugging
         if self.debug:
-            raw = np.transpose(np.squeeze(outputs[0]))
             print('Raw model output sample:', raw[0][:8])
+            print('Outputs normalized:', self.normalized)
             print('Decoded sample anchors:')
             for i in range(min(3, raw.shape[0])):
                 stride = float(self.stride_tensor[i])
