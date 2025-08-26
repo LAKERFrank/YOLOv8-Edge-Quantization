@@ -32,18 +32,27 @@ LOGGER = logging.getLogger("onnx_int8_demo")
 
 
 def preprocess(image: np.ndarray, shape: Tuple[int, int]) -> np.ndarray:
-    """Resize and normalize image for model input."""
+    """Resize and normalize image for RGB models."""
     img = cv2.resize(image, shape, interpolation=cv2.INTER_LINEAR)
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     img = img.transpose(2, 0, 1).astype(np.float32) / 255.0
     return np.expand_dims(img, 0)
 
 
+def preprocess_tracknet(image: np.ndarray, shape: Tuple[int, int], channels: int) -> np.ndarray:
+    """Resize, grayscale, and repeat to match TrackNet channel requirements."""
+    img = cv2.resize(image, shape, interpolation=cv2.INTER_LINEAR)
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
+    img = np.expand_dims(img, 0)  # 1 x H x W
+    img = np.repeat(img, channels, axis=0)  # C x H x W
+    return np.expand_dims(img, 0)  # 1 x C x H x W
+
+
 def run_tracknet(sess: ort.InferenceSession, img: np.ndarray) -> Tuple[int, int]:
     """Run tracknet to get shuttlecock coordinates."""
     input_name = sess.get_inputs()[0].name
     _, c, h, w = sess.get_inputs()[0].shape
-    x = preprocess(img, (w, h))
+    x = preprocess_tracknet(img, (w, h), c)
     pred = sess.run(None, {input_name: x})[0].reshape(-1)
     h_img, w_img = img.shape[:2]
     if pred.max() <= 1.5:  # assume normalized
