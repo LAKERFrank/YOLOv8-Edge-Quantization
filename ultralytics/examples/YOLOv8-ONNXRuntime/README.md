@@ -54,7 +54,7 @@ python main.py --model ../../onnx/yolov8n-pose-fp32.onnx --img image.jpg --save 
 
 ### Debugging
 
-Pass `--debug` to print a few decoded anchors from the raw model output:
+Pass `--debug` to print a slice of the raw model output and a few decoded anchors:
 
 ```bash
 python main.py --model ../../onnx/yolov8n-pose-fp32.onnx --debug
@@ -63,6 +63,7 @@ python main.py --model ../../onnx/yolov8n-pose-fp32.onnx --debug
 Example output:
 
 ```
+Raw model output sample: [0.12, -1.3, ...]
 Decoded sample anchors:
 {'box': (42.1, 53.4, 118.7, 201.2), 'score': 0.84, 'keypoints': [(60.2, 80.1, 0.90), (90.5, 100.7, 0.88), ...]}
 ```

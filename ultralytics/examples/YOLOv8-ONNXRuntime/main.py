@@ -57,18 +57,46 @@ class Yolov8:
                       cv2.FILLED)
         cv2.putText(img, label, (label_x, label_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
 
-    def decode_anchor(self, row):
-        """Decode a single 56-value model output row into box, score and keypoints."""
+    def _make_anchors(self):
+        """Build anchor points and corresponding strides for decoding."""
+        anchors, strides = [], []
+        # Default YOLOv8 strides
+        for s in (8, 16, 32):
+            ny, nx = self.input_height // s, self.input_width // s
+            sy, sx = np.meshgrid(np.arange(ny) + 0.5, np.arange(nx) + 0.5, indexing='ij')
+            anchors.append(np.stack((sx, sy), -1).reshape(-1, 2))
+            strides.append(np.full((ny * nx, 1), s, dtype=np.float32))
+        self.anchor_points = np.concatenate(anchors).astype(np.float32)
+        self.stride_tensor = np.concatenate(strides).astype(np.float32)
+
+    def decode_anchor(self, row, anchor_point, stride):
+        """Decode a single 56-value model output row using YOLOv8's rules."""
         row = 1 / (1 + np.exp(-row))
-        x, y, w, h = row[:4]
+
+        # Decode box center and size
+        xy = (row[:2] * 2 - 0.5 + anchor_point) * stride
+        wh = (row[2:4] * 2) ** 2 * stride
         score = row[4]
+
+        # Decode keypoints
         kpts = row[5:].reshape(-1, 3)
-        x_factor = self.img_width / self.input_width
-        y_factor = self.img_height / self.input_height
-        box = ((x - w / 2) * x_factor, (y - h / 2) * y_factor, w * x_factor, h * y_factor)
+        kpt_xy = (kpts[:, :2] * 2 - 0.5 + anchor_point) * stride
         keypoints = []
-        for kx, ky, kc in kpts:
-            keypoints.append((kx * self.img_width, ky * self.img_height, kc))
+        for (kx, ky), kc in zip(kpt_xy, kpts[:, 2]):
+            keypoints.append((
+                kx * self.img_width / self.input_width,
+                ky * self.img_height / self.input_height,
+                kc,
+            ))
+
+        # Convert to top-left corner xywh and scale to image size
+        x1y1 = xy - wh / 2
+        box = (
+            x1y1[0] * self.img_width / self.input_width,
+            x1y1[1] * self.img_height / self.input_height,
+            wh[0] * self.img_width / self.input_width,
+            wh[1] * self.img_height / self.input_height,
+        )
         return box, score, keypoints
 
     def draw_pose(self, img, keypoints, kpt_threshold=0.5):
@@ -124,7 +152,8 @@ class Yolov8:
 
         boxes, scores, kpts = [], [], []
         for i in range(rows):
-            box, score, keypoints = self.decode_anchor(outputs[i])
+            stride = float(self.stride_tensor[i])
+            box, score, keypoints = self.decode_anchor(outputs[i], self.anchor_points[i], stride)
             if score >= self.confidence_thres:
                 boxes.append(list(box))
                 scores.append(float(score))
@@ -176,12 +205,17 @@ class Yolov8:
         # Run inference using the preprocessed image data
         outputs = session.run(None, {model_inputs[0].name: img_data})
 
+        # Prepare anchors for decoding
+        self._make_anchors()
+
         # Optionally decode and print a few raw output rows for debugging
         if self.debug:
-            decoded = np.transpose(np.squeeze(outputs[0]))
+            raw = np.transpose(np.squeeze(outputs[0]))
+            print('Raw model output sample:', raw[0][:8])
             print('Decoded sample anchors:')
-            for row in decoded[:3]:
-                box, score, kpts = self.decode_anchor(row)
+            for i in range(min(3, raw.shape[0])):
+                stride = float(self.stride_tensor[i])
+                box, score, kpts = self.decode_anchor(raw[i], self.anchor_points[i], stride)
                 print({'box': box, 'score': float(score), 'keypoints': kpts[:2]})
 
         # Perform post-processing on the outputs to obtain output image.
