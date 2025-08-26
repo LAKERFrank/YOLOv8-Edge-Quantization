@@ -72,13 +72,19 @@ def run_pose(sess: ort.InferenceSession, img: np.ndarray, conf: float) -> List[T
     input_name = sess.get_inputs()[0].name
     _, c, h, w = sess.get_inputs()[0].shape
     x = preprocess_pose(img, (w, h), c)
-    pred = sess.run(None, {input_name: x})[0][0]
-    boxes, scores, kpts = pred[:, :4], pred[:, 4], pred[:, 5:]
+    pred = sess.run(None, {input_name: x})[0]
+    pred = np.squeeze(pred)
+    if pred.ndim == 1:
+        pred = pred.reshape(-1, pred.shape[0])
+    if pred.shape[0] < pred.shape[1]:
+        pred = pred.T
+    num_kpt = (pred.shape[1] - 5) // 3
+    boxes, scores, kpts = pred[:, :4], pred[:, 4], pred[:, 5:5 + num_kpt * 3]
     people = []
     for box, score, kpt in zip(boxes, scores, kpts):
         if score < conf:
             continue
-        kpt = kpt.reshape(-1, 3)
+        kpt = kpt.reshape(num_kpt, 3)
         people.append((box, kpt))
     return people
 
