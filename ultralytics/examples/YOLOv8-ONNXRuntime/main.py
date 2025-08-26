@@ -37,50 +37,24 @@ class Yolov8:
         self.iou_thres = iou_thres
         self.debug = debug
 
-        # Load the class names from the COCO dataset
+        # Load class names for completeness, though pose demo does not use them
         self.classes = yaml_load(check_yaml('coco128.yaml'))['names']
 
-        # Generate a color palette for the classes
+        # Generate a color palette for potential box drawing
         self.color_palette = np.random.uniform(0, 255, size=(len(self.classes), 3))
 
     def draw_detections(self, img, box, score, class_id):
-        """
-        Draws bounding boxes and labels on the input image based on the detected objects.
+        """Draw a bounding box and label for a detected object."""
 
-        Args:
-            img: The input image to draw detections on.
-            box: Detected bounding box.
-            score: Corresponding detection score.
-            class_id: Class ID for the detected object.
-
-        Returns:
-            None
-        """
-
-        # Extract the coordinates of the bounding box
         x1, y1, w, h = box
-
-        # Retrieve the color for the class ID
         color = self.color_palette[class_id]
-
-        # Draw the bounding box on the image
         cv2.rectangle(img, (int(x1), int(y1)), (int(x1 + w), int(y1 + h)), color, 2)
-
-        # Create the label text with class name and score
         label = f'{self.classes[class_id]}: {score:.2f}'
-
-        # Calculate the dimensions of the label text
         (label_width, label_height), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-
-        # Calculate the position of the label text
         label_x = x1
         label_y = y1 - 10 if y1 - 10 > label_height else y1 + 10
-
-        # Draw a filled rectangle as the background for the label text
         cv2.rectangle(img, (label_x, label_y - label_height), (label_x + label_width, label_y + label_height), color,
                       cv2.FILLED)
-
-        # Draw the label text on the image
         cv2.putText(img, label, (label_x, label_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
 
     def decode_anchor(self, row):
@@ -96,6 +70,25 @@ class Yolov8:
         for kx, ky, kc in kpts:
             keypoints.append((kx * self.img_width, ky * self.img_height, kc))
         return box, score, keypoints
+
+    def draw_pose(self, img, keypoints, kpt_threshold=0.5):
+        """Draw keypoints and skeleton on an image."""
+
+        skeleton = [[16, 14], [14, 12], [17, 15], [15, 13], [12, 13], [6, 12],
+                    [7, 13], [6, 7], [6, 8], [7, 9], [8, 10], [9, 11], [2, 3],
+                    [1, 2], [1, 3], [2, 4], [3, 5], [4, 6], [5, 7]]
+
+        # Draw keypoints
+        for x, y, c in keypoints:
+            if c > kpt_threshold:
+                cv2.circle(img, (int(x), int(y)), 3, (0, 255, 0), -1)
+
+        # Draw skeleton lines
+        for i, j in skeleton:
+            x1, y1, c1 = keypoints[i - 1]
+            x2, y2, c2 = keypoints[j - 1]
+            if c1 > kpt_threshold and c2 > kpt_threshold:
+                cv2.line(img, (int(x1), int(y1)), (int(x2), int(y2)), (255, 0, 0), 2)
 
     def preprocess(self):
         """
@@ -124,81 +117,31 @@ class Yolov8:
         return image_data
 
     def postprocess(self, input_image, output):
-        """
-        Performs post-processing on the model's output to extract bounding boxes, scores, and class IDs.
+        """Decode model output and draw poses on the image."""
 
-        Args:
-            input_image (numpy.ndarray): The input image.
-            output (numpy.ndarray): The output of the model.
-
-        Returns:
-            numpy.ndarray: The input image with detections drawn on it.
-        """
-
-        # Transpose and squeeze the output to match the expected shape
         outputs = np.transpose(np.squeeze(output[0]))
-
-        # Get the number of rows in the outputs array
         rows = outputs.shape[0]
 
-        # Lists to store the bounding boxes, scores, and class IDs of the detections
-        boxes = []
-        scores = []
-        class_ids = []
-
-        # Calculate the scaling factors for the bounding box coordinates
-        x_factor = self.img_width / self.input_width
-        y_factor = self.img_height / self.input_height
-
-        # Iterate over each row in the outputs array
+        boxes, scores, kpts = [], [], []
         for i in range(rows):
-            # Extract the class scores from the current row
-            classes_scores = outputs[i][4:]
+            box, score, keypoints = self.decode_anchor(outputs[i])
+            if score >= self.confidence_thres:
+                boxes.append(list(box))
+                scores.append(float(score))
+                kpts.append(keypoints)
 
-            # Find the maximum score among the class scores
-            max_score = np.amax(classes_scores)
-
-            # If the maximum score is above the confidence threshold
-            if max_score >= self.confidence_thres:
-                # Get the class ID with the highest score
-                class_id = np.argmax(classes_scores)
-
-                # Extract the bounding box coordinates from the current row
-                x, y, w, h = outputs[i][0], outputs[i][1], outputs[i][2], outputs[i][3]
-
-                # Calculate the scaled coordinates of the bounding box
-                left = int((x - w / 2) * x_factor)
-                top = int((y - h / 2) * y_factor)
-                width = int(w * x_factor)
-                height = int(h * y_factor)
-
-                # Add the class ID, score, and box coordinates to the respective lists
-                class_ids.append(class_id)
-                scores.append(max_score)
-                boxes.append([left, top, width, height])
-
-        # Apply non-maximum suppression to filter out overlapping bounding boxes
         indices = cv2.dnn.NMSBoxes(boxes, scores, self.confidence_thres, self.iou_thres)
+        for idx in np.array(indices).flatten():
+            self.draw_pose(input_image, kpts[idx])
 
-        # Iterate over the selected indices after non-maximum suppression
-        for i in indices:
-            # Get the box, score, and class ID corresponding to the index
-            box = boxes[i]
-            score = scores[i]
-            class_id = class_ids[i]
-
-            # Draw the detection on the input image
-            self.draw_detections(input_image, box, score, class_id)
-
-        # Return the modified input image
         return input_image
 
     def main(self):
         """
-        Performs inference using an ONNX model and returns the output image with drawn detections.
+        Run inference using an ONNX model and return the image with poses drawn.
 
         Returns:
-            output_img: The output image with drawn detections.
+            output_img: The output image with drawn poses.
         """
         # Create an inference session using the ONNX model. Try CUDA if available,
         # but gracefully fall back to CPU when the required GPU libraries are missing.
@@ -266,7 +209,7 @@ if __name__ == '__main__':
     # Create an instance of the Yolov8 class with the specified arguments
     detection = Yolov8(args.model, args.img, args.conf_thres, args.iou_thres, debug=args.debug)
 
-    # Perform object detection and obtain the output image
+    # Perform pose estimation and obtain the output image
     output_image = detection.main()
 
     # Optionally save the output image

@@ -44,6 +44,14 @@ Make sure to replace yolov8n.onnx with the path to your YOLOv8 ONNX model file, 
 
 Use `--save <path>` to write the annotated image to disk and `--show` to display it in a window (requires GUI support).
 
+### Pose Visualization
+
+When provided a pose model (e.g. `onnx/yolov8n-pose-fp32.onnx`), the script decodes keypoints and draws the skeleton:
+
+```bash
+python main.py --model ../../onnx/yolov8n-pose-fp32.onnx --img image.jpg --save pose.jpg
+```
+
 ### Debugging
 
 Pass `--debug` to print a few decoded anchors from the raw model output:
