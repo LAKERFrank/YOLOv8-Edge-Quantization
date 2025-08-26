@@ -72,12 +72,13 @@ class Yolov8:
         self.stride_tensor = np.concatenate(strides).astype(np.float32)
 
     def decode_anchor(self, row, anchor_point, stride):
-        """Decode a single 56-value model output row using YOLOv8's rules.
+        """Apply sigmoid and image scaling to turn one 56-value row into
+        ``(box, score, keypoints)``.
 
-        ``self.normalized`` is determined from the raw model outputs. If the
-        model already emits values in [0, 1], a second sigmoid would push every
-        coordinate toward 1.0 and collapse keypoints. In that case we skip the
-        sigmoid here.
+        The anchor point and stride identify the center of the grid cell. If
+        the model already emits values in [0, 1], a second sigmoid would push
+        every coordinate toward 1.0 and collapse keypoints, so it is skipped
+        in that case.
         """
 
         if not self.normalized:

@@ -57,7 +57,8 @@ python main.py --model ../../onnx/yolov8n-pose-fp32.onnx --img image.jpg --save 
 Use `--debug` to peek at the raw model output and confirm whether the exported
 model already applied sigmoid/normalization. If all numbers lie in `[0, 1]` the
 script will skip the extra sigmoid to avoid collapsing keypoints to the same
-position.
+position. The flag also decodes a few anchors with `decode_anchor` and prints
+them as dictionaries containing the box, score, and first keypoints.
 
 ```bash
 python main.py --model ../../onnx/yolov8n-pose-fp32.onnx --debug
@@ -71,3 +72,5 @@ Outputs normalized: False
 Decoded sample anchors:
 {'box': (42.1, 53.4, 118.7, 201.2), 'score': 0.84, 'keypoints': [(60.2, 80.1, 0.90), (90.5, 100.7, 0.88), ...]}
 ```
+
+Each keypoint tuple is `(x, y, confidence)` in pixel coordinates.
