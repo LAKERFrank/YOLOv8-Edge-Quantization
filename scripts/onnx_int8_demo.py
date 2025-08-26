@@ -31,12 +31,17 @@ SKELETON: List[Tuple[int, int]] = [
 LOGGER = logging.getLogger("onnx_int8_demo")
 
 
-def preprocess(image: np.ndarray, shape: Tuple[int, int]) -> np.ndarray:
-    """Resize and normalize image for RGB models."""
+def preprocess_pose(image: np.ndarray, shape: Tuple[int, int], channels: int) -> np.ndarray:
+    """Resize and normalize image for pose models supporting 1 or 3 channels."""
     img = cv2.resize(image, shape, interpolation=cv2.INTER_LINEAR)
-    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    img = img.transpose(2, 0, 1).astype(np.float32) / 255.0
-    return np.expand_dims(img, 0)
+    if channels == 1:
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        img = img.astype(np.float32) / 255.0
+        img = np.expand_dims(img, axis=0)  # 1 x H x W
+    else:
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        img = img.transpose(2, 0, 1).astype(np.float32) / 255.0  # 3 x H x W
+    return np.expand_dims(img, 0)  # 1 x C x H x W
 
 
 def preprocess_tracknet(image: np.ndarray, shape: Tuple[int, int], channels: int) -> np.ndarray:
@@ -65,8 +70,8 @@ def run_tracknet(sess: ort.InferenceSession, img: np.ndarray) -> Tuple[int, int]
 def run_pose(sess: ort.InferenceSession, img: np.ndarray, conf: float) -> List[Tuple[np.ndarray, np.ndarray]]:
     """Run pose model and return list of (box, keypoints)."""
     input_name = sess.get_inputs()[0].name
-    _, _, h, w = sess.get_inputs()[0].shape
-    x = preprocess(img, (w, h))
+    _, c, h, w = sess.get_inputs()[0].shape
+    x = preprocess_pose(img, (w, h), c)
     pred = sess.run(None, {input_name: x})[0][0]
     boxes, scores, kpts = pred[:, :4], pred[:, 4], pred[:, 5:]
     people = []
