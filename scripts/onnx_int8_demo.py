@@ -139,7 +139,9 @@ def main() -> None:
     people = run_pose(pose_sess, img, args.conf)
     LOGGER.info(f"Detected {len(people)} person(s)")
     for idx, (box, kpt) in enumerate(people):
-        LOGGER.info(f"Person {idx} bbox: {box.tolist()} kpts: {kpt[:, :2].tolist()}")
+        box_i = box.astype(int).tolist()
+        kpts_i = kpt[:, :2].astype(int).tolist()
+        LOGGER.info("Person %d bbox: %s kpts: %s", idx, box_i, kpts_i)
     draw_pose(img, people)
 
     out_path = Path(args.output)
