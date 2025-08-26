@@ -21,7 +21,7 @@ from ultralytics.yolo.utils.checks import check_requirements, check_yaml
 
 class Yolov8:
 
-    def __init__(self, onnx_model, input_image, confidence_thres, iou_thres):
+    def __init__(self, onnx_model, input_image, confidence_thres, iou_thres, debug=False):
         """
         Initializes an instance of the Yolov8 class.
 
@@ -35,6 +35,7 @@ class Yolov8:
         self.input_image = input_image
         self.confidence_thres = confidence_thres
         self.iou_thres = iou_thres
+        self.debug = debug
 
         # Load the class names from the COCO dataset
         self.classes = yaml_load(check_yaml('coco128.yaml'))['names']
@@ -81,6 +82,20 @@ class Yolov8:
 
         # Draw the label text on the image
         cv2.putText(img, label, (label_x, label_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
+
+    def decode_anchor(self, row):
+        """Decode a single 56-value model output row into box, score and keypoints."""
+        row = 1 / (1 + np.exp(-row))
+        x, y, w, h = row[:4]
+        score = row[4]
+        kpts = row[5:].reshape(-1, 3)
+        x_factor = self.img_width / self.input_width
+        y_factor = self.img_height / self.input_height
+        box = ((x - w / 2) * x_factor, (y - h / 2) * y_factor, w * x_factor, h * y_factor)
+        keypoints = []
+        for kx, ky, kc in kpts:
+            keypoints.append((kx * self.img_width, ky * self.img_height, kc))
+        return box, score, keypoints
 
     def preprocess(self):
         """
@@ -218,6 +233,14 @@ class Yolov8:
         # Run inference using the preprocessed image data
         outputs = session.run(None, {model_inputs[0].name: img_data})
 
+        # Optionally decode and print a few raw output rows for debugging
+        if self.debug:
+            decoded = np.transpose(np.squeeze(outputs[0]))
+            print('Decoded sample anchors:')
+            for row in decoded[:3]:
+                box, score, kpts = self.decode_anchor(row)
+                print({'box': box, 'score': float(score), 'keypoints': kpts[:2]})
+
         # Perform post-processing on the outputs to obtain output image.
         output_img = self.postprocess(self.img, outputs)
 
@@ -234,13 +257,14 @@ if __name__ == '__main__':
     parser.add_argument('--iou-thres', type=float, default=0.5, help='NMS IoU threshold')
     parser.add_argument('--save', type=str, default='', help='Optional path to save the output image')
     parser.add_argument('--show', action='store_true', help='Display the output image in a window')
+    parser.add_argument('--debug', action='store_true', help='Print decoded output for a few anchors')
     args = parser.parse_args()
 
     # Check the requirements and select the appropriate backend (CPU or GPU)
     check_requirements('onnxruntime-gpu' if torch.cuda.is_available() else 'onnxruntime')
 
     # Create an instance of the Yolov8 class with the specified arguments
-    detection = Yolov8(args.model, args.img, args.conf_thres, args.iou_thres)
+    detection = Yolov8(args.model, args.img, args.conf_thres, args.iou_thres, debug=args.debug)
 
     # Perform object detection and obtain the output image
     output_image = detection.main()

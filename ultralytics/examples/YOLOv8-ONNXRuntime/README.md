@@ -43,3 +43,18 @@ python main.py --model yolov8n.onnx --img image.jpg --conf-thres 0.5 --iou-thres
 Make sure to replace yolov8n.onnx with the path to your YOLOv8 ONNX model file, image.jpg with the path to your input image, and adjust the confidence threshold (conf-thres) and IoU threshold (iou-thres) values as needed.
 
 Use `--save <path>` to write the annotated image to disk and `--show` to display it in a window (requires GUI support).
+
+### Debugging
+
+Pass `--debug` to print a few decoded anchors from the raw model output:
+
+```bash
+python main.py --model ../../onnx/yolov8n-pose-fp32.onnx --debug
+```
+
+Example output:
+
+```
+Decoded sample anchors:
+{'box': (42.1, 53.4, 118.7, 201.2), 'score': 0.84, 'keypoints': [(60.2, 80.1, 0.90), (90.5, 100.7, 0.88), ...]}
+```
