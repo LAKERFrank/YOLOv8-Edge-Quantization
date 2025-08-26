@@ -84,10 +84,23 @@ def draw_pose(image: np.ndarray, people: List[Tuple[np.ndarray, np.ndarray]]) ->
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="INT8 ONNX pose and tracknet demo")
-    ap.add_argument("--pose", required=True, help="Path to pose ONNX model")
-    ap.add_argument("--track", required=True, help="Path to tracknet ONNX model")
-    ap.add_argument("--image", required=True, help="Input image path")
-    ap.add_argument("--output", default="result.jpg", help="Output image path")
+    root = Path(__file__).resolve().parents[1]
+    ap.add_argument(
+        "--pose",
+        default=str(root / "onnx/yolov8n-pose-int8.onnx"),
+        help="Path to pose ONNX model",
+    )
+    ap.add_argument(
+        "--track",
+        default=str(root / "onnx/tracknet1000-int8.onnx"),
+        help="Path to tracknet ONNX model",
+    )
+    ap.add_argument(
+        "--image",
+        default=str(root / "val/pose/1_00_01_00349.jpg"),
+        help="Input image path",
+    )
+    ap.add_argument("--output", default="test.jpg", help="Output image path")
     ap.add_argument("--conf", type=float, default=0.25, help="Pose confidence threshold")
     args = ap.parse_args()
 
