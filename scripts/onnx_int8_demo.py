@@ -44,26 +44,43 @@ def preprocess_pose(image: np.ndarray, shape: Tuple[int, int], channels: int) ->
     return np.expand_dims(img, 0)  # 1 x C x H x W
 
 
-def preprocess_tracknet(image: np.ndarray, shape: Tuple[int, int], channels: int) -> np.ndarray:
-    """Resize, grayscale, and repeat to match TrackNet channel requirements."""
-    img = cv2.resize(image, shape, interpolation=cv2.INTER_LINEAR)
+def letterbox(image: np.ndarray, shape: Tuple[int, int]) -> Tuple[np.ndarray, float, Tuple[int, int]]:
+    """Resize image to fit in shape (width, height) while preserving aspect ratio."""
+    w, h = shape
+    h0, w0 = image.shape[:2]
+    r = min(w / w0, h / h0)
+    new_w, new_h = int(round(w0 * r)), int(round(h0 * r))
+    dw, dh = w - new_w, h - new_h
+    dw /= 2
+    dh /= 2
+    img = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+    top, bottom = int(np.floor(dh)), int(np.ceil(dh))
+    left, right = int(np.floor(dw)), int(np.ceil(dw))
+    img = cv2.copyMakeBorder(img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=(0, 0, 0))
+    return img, r, (left, top)
+
+
+def preprocess_tracknet(image: np.ndarray, shape: Tuple[int, int], channels: int) -> Tuple[np.ndarray, float, Tuple[int, int]]:
+    """Letterbox, grayscale, and repeat to match TrackNet channel requirements."""
+    img, ratio, pad = letterbox(image, shape)
     img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
     img = np.expand_dims(img, 0)  # 1 x H x W
     img = np.repeat(img, channels, axis=0)  # C x H x W
-    return np.expand_dims(img, 0)  # 1 x C x H x W
+    return np.expand_dims(img, 0), ratio, pad  # 1 x C x H x W, ratio, (pad_w, pad_h)
 
 
 def run_tracknet(sess: ort.InferenceSession, img: np.ndarray) -> Tuple[int, int]:
     """Run tracknet to get shuttlecock coordinates."""
     input_name = sess.get_inputs()[0].name
     _, c, h, w = sess.get_inputs()[0].shape
-    x = preprocess_tracknet(img, (w, h), c)
+    x, ratio, pad = preprocess_tracknet(img, (w, h), c)
     pred = sess.run(None, {input_name: x})[0].reshape(-1)
-    h_img, w_img = img.shape[:2]
     if pred.max() <= 1.5:  # assume normalized
-        x_px, y_px = int(pred[0] * w_img), int(pred[1] * h_img)
+        x_pad, y_pad = pred[0] * w, pred[1] * h
     else:
-        x_px, y_px = int(pred[0]), int(pred[1])
+        x_pad, y_pad = pred[0], pred[1]
+    x_px = int((x_pad - pad[0]) / ratio)
+    y_px = int((y_pad - pad[1]) / ratio)
     return x_px, y_px
 
 
