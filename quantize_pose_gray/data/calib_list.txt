@@ -1,0 +1,2 @@
+# path/to/calibration/image1.jpg
+# path/to/calibration/image2.jpg
