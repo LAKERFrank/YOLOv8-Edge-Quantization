@@ -61,34 +61,40 @@ def letterbox(image: np.ndarray, shape: Tuple[int, int]) -> Tuple[np.ndarray, fl
 
 
 def preprocess_tracknet(
-    image: np.ndarray,
+    images: List[np.ndarray],
     shape: Tuple[int, int],
-    channels: int,
     debug_path: str | None = None,
 ) -> Tuple[np.ndarray, float, Tuple[int, int]]:
-    """Letterbox, grayscale, and repeat to match TrackNet channel requirements.
+    """Letterbox, grayscale and stack multiple frames for TrackNet.
 
-    If ``debug_path`` is provided, the letterboxed image (before grayscale)
-    is saved for visualization.
+    ``images`` should contain the consecutive frames in chronological order.
+    The first frame is used to determine scaling/padding and optionally saved
+    before grayscale conversion when ``debug_path`` is provided.
     """
-    img, ratio, pad = letterbox(image, shape)
-    if debug_path:
-        cv2.imwrite(debug_path, img)
-    img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
-    img = np.expand_dims(img, 0)  # 1 x H x W
-    img = np.repeat(img, channels, axis=0)  # C x H x W
-    return np.expand_dims(img, 0), ratio, pad  # 1 x C x H x W, ratio, (pad_w, pad_h)
+    processed: List[np.ndarray] = []
+    ratio = 0.0
+    pad = (0, 0)
+    for i, img in enumerate(images):
+        lb, ratio, pad = letterbox(img, shape)
+        if i == 0 and debug_path:
+            cv2.imwrite(debug_path, lb)
+        gray = cv2.cvtColor(lb, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
+        processed.append(gray)
+    stack = np.stack(processed, axis=0)  # C x H x W
+    return np.expand_dims(stack, 0), ratio, pad  # 1 x C x H x W, ratio, (pad_w, pad_h)
 
 
 def run_tracknet(
     sess: ort.InferenceSession,
-    img: np.ndarray,
+    frames: List[np.ndarray],
     debug_path: str | None = None,
 ) -> Tuple[int, int]:
-    """Run tracknet to get shuttlecock coordinates."""
+    """Run tracknet on a sequence of frames to get shuttlecock coordinates."""
     input_name = sess.get_inputs()[0].name
     _, c, h, w = sess.get_inputs()[0].shape
-    x, ratio, pad = preprocess_tracknet(img, (w, h), c, debug_path)
+    if len(frames) != c:
+        raise ValueError(f"TrackNet expects {c} frames, got {len(frames)}")
+    x, ratio, pad = preprocess_tracknet(frames, (w, h), debug_path)
     pred = sess.run(None, {input_name: x})[0].reshape(-1)
     if pred.max() <= 1.5:  # assume normalized
         x_pad, y_pad = pred[0] * w, pred[1] * h
@@ -148,9 +154,11 @@ def main() -> None:
         help="Path to tracknet ONNX model",
     )
     ap.add_argument(
-        "--image",
-        default=str(root / "val/pose/1_00_01_00349.jpg"),
-        help="Input image path",
+        "--frames",
+        nargs=10,
+        metavar="F",
+        required=True,
+        help="Paths to 10 consecutive frames for TrackNet",
     )
     ap.add_argument("--output", default="test.jpg", help="Output image path")
     ap.add_argument("--conf", type=float, default=0.25, help="Pose confidence threshold")
@@ -161,14 +169,16 @@ def main() -> None:
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    img = cv2.imread(args.image)
-    if img is None:
-        raise FileNotFoundError(args.image)
+    frames = [cv2.imread(p) for p in args.frames]
+    missing = [p for p, f in zip(args.frames, frames) if f is None]
+    if missing:
+        raise FileNotFoundError(", ".join(missing))
+    img = frames[-1]
 
     pose_sess = ort.InferenceSession(args.pose, providers=["CPUExecutionProvider"])
     track_sess = ort.InferenceSession(args.track, providers=["CPUExecutionProvider"])
 
-    ball_x, ball_y = run_tracknet(track_sess, img, args.save_track_input)
+    ball_x, ball_y = run_tracknet(track_sess, frames, args.save_track_input)
     LOGGER.info(f"Shuttlecock at: ({ball_x}, {ball_y})")
     cv2.circle(img, (ball_x, ball_y), 5, (0, 0, 255), -1)
 
