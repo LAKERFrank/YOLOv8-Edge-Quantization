@@ -154,11 +154,9 @@ def main() -> None:
         help="Path to tracknet ONNX model",
     )
     ap.add_argument(
-        "--frames",
-        nargs=10,
-        metavar="F",
+        "--frame-dir",
         required=True,
-        help="Paths to 10 consecutive frames for TrackNet",
+        help="Directory containing >=10 consecutive frames for TrackNet",
     )
     ap.add_argument("--output", default="test.jpg", help="Output image path")
     ap.add_argument("--conf", type=float, default=0.25, help="Pose confidence threshold")
@@ -169,14 +167,21 @@ def main() -> None:
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    frames = [cv2.imread(p) for p in args.frames]
-    missing = [p for p, f in zip(args.frames, frames) if f is None]
+    pose_sess = ort.InferenceSession(args.pose, providers=["CPUExecutionProvider"])
+    track_sess = ort.InferenceSession(args.track, providers=["CPUExecutionProvider"])
+
+    _, c, _, _ = track_sess.get_inputs()[0].shape
+    frame_dir = Path(args.frame_dir)
+    exts = {".jpg", ".jpeg", ".png", ".bmp"}
+    all_frames = sorted(p for p in frame_dir.iterdir() if p.suffix.lower() in exts)
+    if len(all_frames) < c:
+        raise ValueError(f"Need at least {c} frames in {frame_dir}")
+    frame_paths = all_frames[-c:]
+    frames = [cv2.imread(str(p)) for p in frame_paths]
+    missing = [str(p) for p, f in zip(frame_paths, frames) if f is None]
     if missing:
         raise FileNotFoundError(", ".join(missing))
     img = frames[-1]
-
-    pose_sess = ort.InferenceSession(args.pose, providers=["CPUExecutionProvider"])
-    track_sess = ort.InferenceSession(args.track, providers=["CPUExecutionProvider"])
 
     ball_x, ball_y = run_tracknet(track_sess, frames, args.save_track_input)
     LOGGER.info(f"Shuttlecock at: ({ball_x}, {ball_y})")
