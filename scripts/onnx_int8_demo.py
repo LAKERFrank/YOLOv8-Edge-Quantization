@@ -60,20 +60,35 @@ def letterbox(image: np.ndarray, shape: Tuple[int, int]) -> Tuple[np.ndarray, fl
     return img, r, (left, top)
 
 
-def preprocess_tracknet(image: np.ndarray, shape: Tuple[int, int], channels: int) -> Tuple[np.ndarray, float, Tuple[int, int]]:
-    """Letterbox, grayscale, and repeat to match TrackNet channel requirements."""
+def preprocess_tracknet(
+    image: np.ndarray,
+    shape: Tuple[int, int],
+    channels: int,
+    debug_path: str | None = None,
+) -> Tuple[np.ndarray, float, Tuple[int, int]]:
+    """Letterbox, grayscale, and repeat to match TrackNet channel requirements.
+
+    If ``debug_path`` is provided, the letterboxed image (before grayscale)
+    is saved for visualization.
+    """
     img, ratio, pad = letterbox(image, shape)
+    if debug_path:
+        cv2.imwrite(debug_path, img)
     img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
     img = np.expand_dims(img, 0)  # 1 x H x W
     img = np.repeat(img, channels, axis=0)  # C x H x W
     return np.expand_dims(img, 0), ratio, pad  # 1 x C x H x W, ratio, (pad_w, pad_h)
 
 
-def run_tracknet(sess: ort.InferenceSession, img: np.ndarray) -> Tuple[int, int]:
+def run_tracknet(
+    sess: ort.InferenceSession,
+    img: np.ndarray,
+    debug_path: str | None = None,
+) -> Tuple[int, int]:
     """Run tracknet to get shuttlecock coordinates."""
     input_name = sess.get_inputs()[0].name
     _, c, h, w = sess.get_inputs()[0].shape
-    x, ratio, pad = preprocess_tracknet(img, (w, h), c)
+    x, ratio, pad = preprocess_tracknet(img, (w, h), c, debug_path)
     pred = sess.run(None, {input_name: x})[0].reshape(-1)
     if pred.max() <= 1.5:  # assume normalized
         x_pad, y_pad = pred[0] * w, pred[1] * h
@@ -139,6 +154,10 @@ def main() -> None:
     )
     ap.add_argument("--output", default="test.jpg", help="Output image path")
     ap.add_argument("--conf", type=float, default=0.25, help="Pose confidence threshold")
+    ap.add_argument(
+        "--save-track-input",
+        help="Optional path to save the letterboxed TrackNet input image",
+    )
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -149,7 +168,7 @@ def main() -> None:
     pose_sess = ort.InferenceSession(args.pose, providers=["CPUExecutionProvider"])
     track_sess = ort.InferenceSession(args.track, providers=["CPUExecutionProvider"])
 
-    ball_x, ball_y = run_tracknet(track_sess, img)
+    ball_x, ball_y = run_tracknet(track_sess, img, args.save_track_input)
     LOGGER.info(f"Shuttlecock at: ({ball_x}, {ball_y})")
     cv2.circle(img, (ball_x, ball_y), 5, (0, 0, 255), -1)
 
