@@ -243,7 +243,20 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     # parse normalize string
-    norm_parts = {kv.split('=')[0]: float(kv.split('=')[1]) for kv in args.normalize.split(',') if '=' in kv}
+    def _parse_num(v: str) -> float:
+        try:
+            return float(v)
+        except ValueError:
+            if '/' in v:
+                a, b = v.split('/', 1)
+                return float(a) / float(b)
+            raise
+
+    norm_parts = {}
+    for kv in args.normalize.split(','):
+        if '=' in kv:
+            k, v = kv.split('=', 1)
+            norm_parts[k] = _parse_num(v)
     args.scale = norm_parts.get('scale', 1/255.0)
     args.mean = norm_parts.get('mean', 0.0)
     args.std = norm_parts.get('std', 1.0)
