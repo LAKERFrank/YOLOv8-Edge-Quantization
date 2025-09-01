@@ -1,10 +1,11 @@
 from ultralytics import YOLO
+from pathlib import Path
 
 PT = "yolov8n-pose-gray.pt"
 ONNX_OUT = "yolov8n-pose-gray.fp32.onnx"
 
 y = YOLO(PT)
-y.export(
+exported = y.export(
     format="onnx",
     opset=13,
     simplify=True,
@@ -14,4 +15,6 @@ y.export(
     verbose=True,
     optimize=True,
 )
+
 # Ultralytics writes under runs/, move or rename as needed to ONNX_OUT
+Path(exported).replace(ONNX_OUT)
