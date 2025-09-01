@@ -1,4 +1,5 @@
 import argparse
+import os
 from ultralytics import YOLO
 from onnxruntime.quantization import quantize_dynamic, QuantType
 
@@ -19,18 +20,19 @@ def main():
 
     # Export the model to ONNX using Ultralytics
     model = YOLO(args.weights)
-    onnx_path = model.export(
+    onnx_tmp = model.export(
         format="onnx",
         opset=12,
         simplify=True,
         dynamic=False,
         imgsz=640,
-        path=args.onnx_out,
     )
+    # Rename to the desired output path
+    os.replace(onnx_tmp, args.onnx_out)
 
     # Quantize the exported model to INT8 with weight-only dynamic quantization
     quantize_dynamic(
-        model_input=onnx_path,
+        model_input=args.onnx_out,
         model_output=args.quant_out,
         weight_type=QuantType.QInt8,
         optimize_model=True,

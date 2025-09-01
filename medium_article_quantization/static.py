@@ -69,19 +69,20 @@ def main():
 
     # Export the model to ONNX
     model = YOLO(args.weights)
-    onnx_path = model.export(
+    onnx_tmp = model.export(
         format="onnx",
         opset=12,
         simplify=True,
         dynamic=False,
         imgsz=args.imgsz,
-        path=args.onnx_out,
     )
+    # Rename to the desired output path
+    os.replace(onnx_tmp, args.onnx_out)
 
     # Quantize with static post-training quantization
     dr = YOLOCalibrationDataReader(args.calib_dir, size=args.imgsz)
     quantize_static(
-        model_input=onnx_path,
+        model_input=args.onnx_out,
         model_output=args.quant_out,
         calibration_data_reader=dr,
         activation_type=QuantType.QUInt8,
