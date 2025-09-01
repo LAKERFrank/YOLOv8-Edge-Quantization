@@ -25,6 +25,13 @@ python scripts/03_quantize_static_ort.py
 
 # 4) Evaluate FP32 vs INT8
 python scripts/04_eval_fp32_vs_int8.py
+
+# 5) Deep layer-wise comparison (optional)
+python validate_pose_int8.py \
+  --onnx-fp32 onnx/yolov8n-pose-gray.fp32.onnx \
+  --onnx-int8 onnx/yolov8n-pose-gray.int8.qdq.onnx \
+  --data-root data/val_images \
+  --num-samples 200
 ```
 
 Calibration and validation image paths are listed in `data/calib_list.txt` and `data/val_list.txt` respectively.
