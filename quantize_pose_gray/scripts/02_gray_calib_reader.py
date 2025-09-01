@@ -2,10 +2,20 @@ import cv2
 import numpy as np
 from onnxruntime.quantization import CalibrationDataReader
 
+from utils_io import ensure_exists
+
 
 def load_paths(list_txt):
+    paths = []
     with open(list_txt, "r", encoding="utf-8") as f:
-        return [ln.strip() for ln in f if ln.strip()]
+        for ln in f:
+            ln = ln.strip()
+            if not ln or ln.startswith("#"):
+                continue
+            ensure_exists(ln)
+            paths.append(ln)
+    assert paths, f"No valid paths found in {list_txt}"
+    return paths
 
 
 def preprocess_gray(path, size=640):
