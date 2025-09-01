@@ -10,6 +10,23 @@ import numpy as np
 import onnx
 import onnxruntime as ort
 
+STAGE_PROBES = {
+    'preproc': [],
+    'backbone': ['c2f'],
+    'neck_out': ['p3', 'p4', 'p5'],
+    'head_in': ['head'],
+    'head_raw': [],
+    'post_head': ['nms', 'decode'],
+}
+
+
+def infer_stage(name: str) -> str:
+    for stage, patterns in STAGE_PROBES.items():
+        for p in patterns:
+            if p and p in name:
+                return stage
+    return 'head_raw'
+
 
 # -----------------------
 # Preprocessing utilities
@@ -124,11 +141,40 @@ def main(args):
     mean = args.mean
     std = args.std
 
-    # Prepare probe names
-    probe_patterns = [p.strip() for p in args.probe.split(',') if p.strip()] if args.probe else []
+    # Stage-specific probe patterns
+    probe_patterns = list(STAGE_PROBES.get(args.stage, []))
+    if args.probe:
+        probe_patterns.extend([p.strip() for p in args.probe.split(',') if p.strip()])
+
+    # Preproc-only check
+    preproc_stats = init_stats()
+    if args.stage == 'preproc':
+        for path in img_paths:
+            x = preprocess_gray_1ch(path, args.img_size, args.letterbox, scale, mean, std, args.layout)
+            update_stats(preproc_stats, x)
+        summary = {
+            'name': 'preproc',
+            'mae': 0.0,
+            'max': 0.0,
+            'shape': preproc_stats['shape'],
+            'stats_fp32': finalize_stats(preproc_stats),
+            'stats_int8': finalize_stats(preproc_stats),
+        }
+        print(f"[Summary] layer=preproc MAE=0.000000 MAX=0.000000")
+        print("preproc: MAE=0.000000 MAX=0.000000")
+        report = {
+            'summary': summary,
+            'per_layer': [summary],
+            'first_failure': None,
+            'config': vars(args),
+        }
+        if args.report:
+            with open(args.report, 'w', encoding='utf-8') as f:
+                json.dump(report, f, indent=2)
+        return
+
     model_fp32 = onnx.load(args.onnx_fp32)
     probe_names = find_probe_names(model_fp32, probe_patterns)
-    # add final outputs to ensure they are included
     probe_names += [o.name for o in model_fp32.graph.output]
     probe_names = list(dict.fromkeys(probe_names))
 
@@ -143,7 +189,6 @@ def main(args):
     metrics = {n: {'mae_sum': 0.0, 'max': 0.0, 'count': 0} for n in out_names}
     stats_a = {n: init_stats() for n in out_names}
     stats_b = {n: init_stats() for n in out_names}
-    preproc_stats = init_stats()
 
     for path in img_paths:
         x = preprocess_gray_1ch(path, args.img_size, args.letterbox, scale, mean, std, args.layout)
@@ -177,6 +222,7 @@ def main(args):
         mx = m['max']
         layer_info = {
             'name': name,
+            'stage': infer_stage(name),
             'mae': mae,
             'max': mx,
             'shape': stats_a[name]['shape'],
@@ -185,7 +231,7 @@ def main(args):
         }
         per_layer.append(layer_info)
         if first_failure is None and (mae > args.threshold_mae or mx > args.threshold_max):
-            first_failure = {'layer': name, 'mae': mae, 'max': mx}
+            first_failure = {'layer': name, 'stage': layer_info['stage'], 'mae': mae, 'max': mx}
 
     summary = per_layer[-1] if per_layer else {}
     print(f"[Summary] layer={summary.get('name','')} MAE={summary.get('mae',0):.6f} MAX={summary.get('max',0):.6f}")
