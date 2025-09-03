@@ -4,3 +4,4 @@ onnxruntime-tools>=1.7.0
 numpy
 opencv-python
 ultralytics>=8.2.0
+pyyaml

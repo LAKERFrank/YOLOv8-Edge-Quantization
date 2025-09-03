@@ -1,0 +1,24 @@
+quant:
+  weight:
+    dtype: qint8
+    per_channel: true
+    symmetric: true
+  activation:
+    dtype: quint8
+    per_channel: false
+    symmetric: false
+    reduce_range: false
+  ops: [Conv, MatMul]
+  format: QDQ
+  calibrator: minmax
+  nodes_to_exclude_substrings: []
+
+ablation:
+  dequantize_kpt_head: true
+  dequantize_bbox_dfl_head: true
+  extra_excludes: []
+
+calib:
+  dir: data/calib_list.txt
+  limit: 800
+  size: 640
