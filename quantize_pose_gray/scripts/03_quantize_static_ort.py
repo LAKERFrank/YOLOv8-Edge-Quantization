@@ -27,11 +27,22 @@ reader = CalibDataReader1Ch(calib_cfg.get("dir", "data/calib_list.txt"),
                              size=calib_cfg.get("size", 640),
                              limit=calib_cfg.get("limit"))
 
+# Warn if calibration set is small
+calib_count = len(reader.paths)
+print(f"calibration samples: {calib_count}")
+if calib_count < 50:
+    print("WARNING: calibration set has fewer than 50 images; quantization accuracy may suffer")
+
 qcfg = cfg.get("quant", {})
 extra_opts = {
     "ActivationSymmetric": qcfg.get("activation", {}).get("symmetric", False),
     "WeightSymmetric": qcfg.get("weight", {}).get("symmetric", False),
 }
+
+print("quantization parameters:")
+print(f"  activation: dtype={qcfg.get('activation', {}).get('dtype', 'qint8')}, per_channel={qcfg.get('activation', {}).get('per_channel', False)}, symmetric={extra_opts['ActivationSymmetric']}")
+print(f"  weight: dtype={qcfg.get('weight', {}).get('dtype', 'qint8')}, per_channel={qcfg.get('weight', {}).get('per_channel', True)}, symmetric={extra_opts['WeightSymmetric']}")
+print(f"  ops: {qcfg.get('ops', ['Conv', 'MatMul'])}")
 
 qs_args = dict(
     model_input=FP32_ONNX,
