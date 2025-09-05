@@ -20,10 +20,11 @@ python scripts/00_check_model_is_gray.py
 # 2) Export ONNX (skip if already available)
 python scripts/01_export_onnx_gray.py
 
-# 3) Preprocess + Quantize (QDQ format)
+# 3) Quantize (QDQ format)
 python scripts/03_quantize_static_ort.py
 
-# (the script runs `preprocess_model` to fuse ops before quantization)
+# (the script attempts to run `preprocess_model` to fuse ops before quantization; if
+# your onnxruntime build lacks this utility, it falls back to quantizing the raw model)
 
 # 4) Evaluate FP32 vs INT8
 python scripts/04_eval_fp32_vs_int8.py

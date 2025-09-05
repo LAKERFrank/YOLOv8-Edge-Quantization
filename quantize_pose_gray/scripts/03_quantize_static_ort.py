@@ -7,9 +7,18 @@ import onnxruntime as ort
 from onnxruntime.quantization import (
     QuantFormat,
     QuantType,
-    preprocess_model,
     quantize_static,
 )
+
+try:
+    # ORT >=1.17 exposes preprocess_model at the top level
+    from onnxruntime.quantization import preprocess_model  # type: ignore
+except ImportError:  # pragma: no cover - older ORT versions
+    try:
+        # Earlier releases ship it under a submodule
+        from onnxruntime.quantization.preprocess import preprocess_model  # type: ignore
+    except Exception:  # pragma: no cover - preprocess not available
+        preprocess_model = None
 
 CalibDataReader1Ch = importlib.import_module("02_gray_calib_reader").CalibDataReader1Ch
 
@@ -27,8 +36,12 @@ input_name = sess.get_inputs()[0].name
 print("input_name:", input_name)
 
 # 1b) Pre-process the FP32 model to fuse ops before quantization
-preprocess_model(FP32_ONNX, PREPROC_ONNX)
-model_input_path = PREPROC_ONNX
+if preprocess_model:
+    preprocess_model(FP32_ONNX, PREPROC_ONNX)
+    model_input_path = PREPROC_ONNX
+else:
+    print("WARNING: preprocess_model not available; quantizing original FP32 graph")
+    model_input_path = FP32_ONNX
 
 # 2) Calibration reader
 calib_cfg = cfg.get("calib", {})
