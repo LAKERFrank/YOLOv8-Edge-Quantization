@@ -40,8 +40,22 @@ if preprocess_model:
     preprocess_model(FP32_ONNX, PREPROC_ONNX)
     model_input_path = PREPROC_ONNX
 else:
-    print("WARNING: preprocess_model not available; quantizing original FP32 graph")
-    model_input_path = FP32_ONNX
+    try:
+        import onnxoptimizer  # type: ignore
+
+        print("WARNING: preprocess_model not available; using onnxoptimizer")
+        model = onnx.load(FP32_ONNX)
+        passes = [
+            "fuse_bn_into_conv",
+            "eliminate_deadend",
+            "eliminate_identity",
+        ]
+        model = onnxoptimizer.optimize(model, passes)
+        onnx.save(model, PREPROC_ONNX)
+        model_input_path = PREPROC_ONNX
+    except Exception:
+        print("WARNING: onnxoptimizer not available; quantizing original FP32 graph")
+        model_input_path = FP32_ONNX
 
 # 2) Calibration reader
 calib_cfg = cfg.get("calib", {})
