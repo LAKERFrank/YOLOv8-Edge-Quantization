@@ -1,0 +1,11 @@
+# image
+*.png
+*.jpg
+*.jpeg
+*.bmp
+*.gif
+
+#models
+*.pt
+*.onnx
+
