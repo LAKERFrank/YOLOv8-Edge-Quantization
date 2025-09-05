@@ -4,11 +4,17 @@ import os
 import yaml
 import onnx
 import onnxruntime as ort
-from onnxruntime.quantization import QuantFormat, QuantType, quantize_static
+from onnxruntime.quantization import (
+    QuantFormat,
+    QuantType,
+    preprocess_model,
+    quantize_static,
+)
 
 CalibDataReader1Ch = importlib.import_module("02_gray_calib_reader").CalibDataReader1Ch
 
 FP32_ONNX = "yolov8n-pose-gray.fp32.onnx"
+PREPROC_ONNX = "yolov8n-pose-gray.preproc.onnx"
 INT8_ONNX = "yolov8n-pose-gray.int8.qdq.onnx"
 CONFIG = os.path.join(os.path.dirname(__file__), "..", "quant_config.yaml")
 
@@ -19,6 +25,10 @@ with open(CONFIG, "r", encoding="utf-8") as f:
 sess = ort.InferenceSession(FP32_ONNX, providers=["CPUExecutionProvider"])
 input_name = sess.get_inputs()[0].name
 print("input_name:", input_name)
+
+# 1b) Pre-process the FP32 model to fuse ops before quantization
+preprocess_model(FP32_ONNX, PREPROC_ONNX)
+model_input_path = PREPROC_ONNX
 
 # 2) Calibration reader
 calib_cfg = cfg.get("calib", {})
@@ -45,7 +55,7 @@ print(f"  weight: dtype={qcfg.get('weight', {}).get('dtype', 'qint8')}, per_chan
 print(f"  ops: {qcfg.get('ops', ['Conv', 'MatMul'])}")
 
 qs_args = dict(
-    model_input=FP32_ONNX,
+    model_input=model_input_path,
     model_output=INT8_ONNX,
     calibration_data_reader=reader,
     quant_format=QuantFormat.QDQ,
@@ -65,7 +75,7 @@ if abl.get("dequantize_bbox_dfl_head", False):
     excludes.update(["bbox", "dfl"])
 excludes.update(abl.get("extra_excludes", []))
 
-model = onnx.load(FP32_ONNX)
+model = onnx.load(model_input_path)
 node_names = []
 for n in model.graph.node:
     if any(s in n.name for s in excludes):
