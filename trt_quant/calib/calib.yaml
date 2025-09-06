@@ -1,0 +1,7 @@
+# 代表性資料（校正用）。影像需為單通道灰階（png/jpg）
+path: .
+train: images
+val: images
+names:
+  0: person
+channels: 1

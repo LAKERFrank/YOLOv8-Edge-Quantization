@@ -1,0 +1,6 @@
+ultralytics>=8.2.0
+opencv-python
+numpy
+# TensorRT Python 套件請依環境安裝（Jetson/NVIDIA 官方來源）；若可用：
+tensorrt
+pycuda
