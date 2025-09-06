@@ -1,3 +1,11 @@
+"""Static QDQ quantization for the grayscale YOLOv8 pose model.
+
+The script optionally pre-processes the float model with ONNX Runtime's
+``preprocess_model`` utility (or ``onnxoptimizer`` as a fallback) to remove
+redundant nodes before quantization. This avoids warnings about missing
+pre-processing when running ``quantize_static``.
+"""
+
 import importlib
 import inspect
 import os
@@ -22,6 +30,35 @@ except ImportError:  # pragma: no cover - older ORT versions
 
 CalibDataReader1Ch = importlib.import_module("02_gray_calib_reader").CalibDataReader1Ch
 
+
+def preprocess_fp32_model(model_path: str, out_path: str) -> str:
+    """Preprocess an FP32 ONNX model to fuse ops and drop unused nodes.
+
+    Returns the path to the model that should be used for quantization.
+    """
+    if preprocess_model:
+        preprocess_model(model_path, out_path)
+        return out_path
+    try:
+        import onnxoptimizer  # type: ignore
+    except Exception:
+        print(
+            "WARNING: preprocess_model and onnxoptimizer unavailable; "
+            "install onnxoptimizer or upgrade onnxruntime for better results",
+        )
+        return model_path
+
+    print("WARNING: preprocess_model not available; using onnxoptimizer")
+    model = onnx.load(model_path)
+    passes = [
+        "fuse_bn_into_conv",
+        "eliminate_deadend",
+        "eliminate_identity",
+    ]
+    model = onnxoptimizer.optimize(model, passes)
+    onnx.save(model, out_path)
+    return out_path
+
 FP32_ONNX = "yolov8n-pose-gray.fp32.onnx"
 PREPROC_ONNX = "yolov8n-pose-gray.preproc.onnx"
 INT8_ONNX = "yolov8n-pose-gray.int8.qdq.onnx"
@@ -36,26 +73,7 @@ input_name = sess.get_inputs()[0].name
 print("input_name:", input_name)
 
 # 1b) Pre-process the FP32 model to fuse ops before quantization
-if preprocess_model:
-    preprocess_model(FP32_ONNX, PREPROC_ONNX)
-    model_input_path = PREPROC_ONNX
-else:
-    try:
-        import onnxoptimizer  # type: ignore
-
-        print("WARNING: preprocess_model not available; using onnxoptimizer")
-        model = onnx.load(FP32_ONNX)
-        passes = [
-            "fuse_bn_into_conv",
-            "eliminate_deadend",
-            "eliminate_identity",
-        ]
-        model = onnxoptimizer.optimize(model, passes)
-        onnx.save(model, PREPROC_ONNX)
-        model_input_path = PREPROC_ONNX
-    except Exception:
-        print("WARNING: onnxoptimizer not available; quantizing original FP32 graph")
-        model_input_path = FP32_ONNX
+model_input_path = preprocess_fp32_model(FP32_ONNX, PREPROC_ONNX)
 
 # 2) Calibration reader
 calib_cfg = cfg.get("calib", {})
