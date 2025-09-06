@@ -1,0 +1,2 @@
+# path/to/validation/image1.jpg
+# path/to/validation/image2.jpg
