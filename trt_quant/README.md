@@ -15,6 +15,19 @@ python trt_quant/scripts/prepare_calib.py \
 ```
 `calib.yaml` sets `path: trt_quant/calib`, so run these commands from the repository root.
 
+Example `trt_quant/calib/calib.yaml`:
+
+```yaml
+# 代表性資料（校正用）。影像需為單通道灰階（png/jpg）
+path: trt_quant/calib
+train: images
+val: images
+names:
+  0: person
+kpt_shape: [17, 3]
+channels: 1
+```
+
 ## 3) Export TensorRT engine
 
 ### INT8

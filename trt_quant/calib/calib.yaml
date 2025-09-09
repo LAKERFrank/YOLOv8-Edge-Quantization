@@ -4,4 +4,5 @@ train: images
 val: images
 names:
   0: person
+kpt_shape: [17, 3]
 channels: 1
