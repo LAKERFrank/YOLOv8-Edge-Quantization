@@ -41,10 +41,12 @@ def main():
     )
     if args.dynamic:
         export_kwargs["dynamic"] = True
-        # Profiles are optional but let users constrain min/opt/max shapes.
-        export_kwargs["min_shape"] = parse_shape(args.minshape)
-        export_kwargs["opt_shape"] = parse_shape(args.optshape)
-        export_kwargs["max_shape"] = parse_shape(args.maxshape)
+        # TensorRT expects the three profiles packed into a single `shape` arg.
+        export_kwargs["shape"] = (
+            parse_shape(args.minshape),
+            parse_shape(args.optshape),
+            parse_shape(args.maxshape),
+        )
         # TensorRT workspace size in GB (ignored if unsupported).
         try:
             export_kwargs["workspace"] = 2
