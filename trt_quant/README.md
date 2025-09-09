@@ -11,9 +11,13 @@ pip install -r trt_quant/requirements.txt
 python trt_quant/scripts/prepare_calib.py \
   --src /path/to/your/images \
   --dst trt_quant/calib/images \
+  --src-labels /path/to/your/labels \  # optional
+  --dst-labels trt_quant/calib/labels \
   --num 300 --imgsz 640 --shuffle
 ```
 `calib.yaml` sets `path: trt_quant/calib`, so run these commands from the repository root.
+
+If `--src-labels` is omitted, blank label files are created in `--dst-labels` to avoid warnings.
 
 Example `trt_quant/calib/calib.yaml`:
 
