@@ -41,17 +41,18 @@ def main():
     )
     if args.dynamic:
         export_kwargs["dynamic"] = True
-        # TensorRT expects the three profiles packed into a single `shape` arg.
-        export_kwargs["shape"] = (
-            parse_shape(args.minshape),
-            parse_shape(args.optshape),
-            parse_shape(args.maxshape),
-        )
         # TensorRT workspace size in GB (ignored if unsupported).
         try:
             export_kwargs["workspace"] = 2
         except Exception:
             pass
+        # Pack optimization profiles (min,opt,max). Some Ultralytics versions
+        # do not accept the "shape" argument, so export will fallback below.
+        export_kwargs["shape"] = (
+            parse_shape(args.minshape),
+            parse_shape(args.optshape),
+            parse_shape(args.maxshape),
+        )
 
     if args.int8:
         export_kwargs["int8"] = True
@@ -64,7 +65,15 @@ def main():
         tag = "fp32"
 
     print("[INFO] Exporting TensorRT engine with args:", export_kwargs)
-    engine_path = model.export(**export_kwargs)  # returns path to .engine
+    try:
+        engine_path = model.export(**export_kwargs)  # returns path to .engine
+    except SyntaxError as e:
+        if "shape" in str(e):
+            print("[WARN] 'shape' arg unsupported by this Ultralytics version; retrying without it")
+            export_kwargs.pop("shape", None)
+            engine_path = model.export(**export_kwargs)
+        else:
+            raise
 
     # Move/rename into outdir
     out_name = args.name or f"pose_{tag}.engine"
