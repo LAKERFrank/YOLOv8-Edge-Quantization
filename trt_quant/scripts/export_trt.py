@@ -71,6 +71,7 @@ def main():
         if "shape" in str(e):
             print("[WARN] 'shape' arg unsupported by this Ultralytics version; retrying without it")
             export_kwargs.pop("shape", None)
+            print("[INFO] Exporting TensorRT engine with args:", export_kwargs)
             engine_path = model.export(**export_kwargs)
         else:
             raise

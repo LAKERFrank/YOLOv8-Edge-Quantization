@@ -13,6 +13,7 @@ python trt_quant/scripts/prepare_calib.py \
   --dst trt_quant/calib/images \
   --num 300 --imgsz 640 --shuffle
 ```
+`calib.yaml` sets `path: trt_quant/calib`, so run these commands from the repository root.
 
 ## 3) Export TensorRT engine
 
