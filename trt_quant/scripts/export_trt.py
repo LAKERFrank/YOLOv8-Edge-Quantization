@@ -41,9 +41,13 @@ def main():
     )
     if args.dynamic:
         export_kwargs["dynamic"] = True
-        # Some Ultralytics versions accept these keys; if ignored, it's fine.
+        # Profiles are optional but let users constrain min/opt/max shapes.
+        export_kwargs["min_shape"] = parse_shape(args.minshape)
+        export_kwargs["opt_shape"] = parse_shape(args.optshape)
+        export_kwargs["max_shape"] = parse_shape(args.maxshape)
+        # TensorRT workspace size in GB (ignored if unsupported).
         try:
-            export_kwargs["max_workspace"] = 2  # GB, optional hint
+            export_kwargs["workspace"] = 2
         except Exception:
             pass
 
