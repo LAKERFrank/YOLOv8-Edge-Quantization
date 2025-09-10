@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Verify a TensorRT engine:
-- print input binding shapes (expect C=1)
+- print input tensor shapes (expect C=1)
 - (optional) call trtexec to dump layer precisions
 """
 import argparse, os, subprocess, sys
@@ -31,20 +31,50 @@ def binding_summary_with_tensorrt(engine_path: str):
         return
     logger = trt.Logger(trt.Logger.ERROR)
     with open(engine_path, "rb") as f, trt.Runtime(logger) as rt:
-        engine = rt.deserialize_cuda_engine(f.read())
+        try:
+            engine = rt.deserialize_cuda_engine(f.read())
+        except Exception as e:
+            print(
+                f"[ERROR] Failed to deserialize engine: {e}. "
+                "This may indicate an incompatible TensorRT version."
+            )
+            return
+        if engine is None:
+            print(
+                "[ERROR] Engine deserialization returned None. "
+                "This may indicate a version mismatch."
+            )
+            return
     try:
-        # TRT 8:
-        nb = engine.num_bindings
-        print(f"[INFO] num_bindings: {nb}")
+        # TensorRT 10+ API
+        nb = engine.num_io_tensors
+        print(f"[INFO] num_io_tensors: {nb}")
         for i in range(nb):
-            name = engine.get_binding_name(i)
-            is_input = engine.binding_is_input(i)
-            shape = engine.get_binding_shape(i)
-            dtype = engine.get_binding_dtype(i)
-            print(f"  - {'INPUT ' if is_input else 'OUTPUT'} {i}: {name:30s} shape={tuple(shape)} dtype={dtype}")
+            name = engine.get_tensor_name(i)
+            mode = engine.get_tensor_mode(name)
+            is_input = mode == trt.TensorIOMode.INPUT
+            shape = engine.get_tensor_shape(name)
+            dtype = engine.get_tensor_dtype(name)
+            print(
+                f"  - {'INPUT ' if is_input else 'OUTPUT'} {i}: {name:30s} "
+                f"shape={tuple(shape)} dtype={dtype}"
+            )
     except AttributeError:
-        # TRT 9 new APIs (if needed, extend here)
-        print("[WARN] Please extend for newer TensorRT API versions.")
+        try:
+            # Fallback for older TensorRT versions
+            nb = engine.num_bindings
+            print(f"[INFO] num_bindings: {nb}")
+            for i in range(nb):
+                name = engine.get_binding_name(i)
+                is_input = engine.binding_is_input(i)
+                shape = engine.get_binding_shape(i)
+                dtype = engine.get_binding_dtype(i)
+                print(
+                    f"  - {'INPUT ' if is_input else 'OUTPUT'} {i}: {name:30s} "
+                    f"shape={tuple(shape)} dtype={dtype}"
+                )
+        except Exception as e:
+            print(f"[WARN] Please extend for newer TensorRT API versions: {e}")
 
 def main():
     ap = argparse.ArgumentParser()
