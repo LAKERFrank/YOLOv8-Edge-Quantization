@@ -1,27 +1,36 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-Verify a TensorRT engine:
-- print input binding shapes (expect C=1)
-- (optional) call trtexec to dump layer precisions
-"""
-import argparse, os, subprocess, sys
+"""Verify a TensorRT engine."""
+
+import argparse
+import os
+import shutil
+import subprocess
+
 
 def print_trtexec_info(engine_path: str):
+    """Invoke trtexec (if available) to dump layer precisions."""
+    trtexec = shutil.which("trtexec")
+    if not trtexec:
+        print("[WARN] trtexec command not found; ensure TensorRT is installed and in PATH.")
+        return
+
     cmd = [
-        "trtexec",
+        trtexec,
         f"--loadEngine={engine_path}",
         "--profilingVerbosity=detailed",
-        "--dumpLayerInfo"
+        "--dumpLayerInfo",
     ]
     try:
-        out = subprocess.check_output(cmd, stderr=subprocess.STDOUT, text=True)
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=True)
         print("==== trtexec summary (truncated) ====")
-        lines = [l for l in out.splitlines() if "Layer" in l or "Precision" in l or "Binding" in l]
+        lines = [l for l in proc.stdout.splitlines() if "Layer" in l or "Precision" in l or "Binding" in l]
         print("\n".join(lines[:300]))
         print("=====================================")
-    except Exception as e:
-        print(f"[WARN] trtexec not available or failed: {e}")
+    except subprocess.CalledProcessError as e:
+        last = e.stdout.strip().splitlines()[-1] if e.stdout else ""
+        print(f"[WARN] trtexec failed (returncode {e.returncode}): {last}")
+
 
 def binding_summary_with_tensorrt(engine_path: str):
     try:
@@ -34,8 +43,8 @@ def binding_summary_with_tensorrt(engine_path: str):
         try:
             engine = rt.deserialize_cuda_engine(f.read())
         except Exception as e:
-            print(f"[WARN] Failed to deserialize engine: {e}")
-            print("[WARN] Please use the same or a newer TensorRT version to deserialize the engine.")
+            print(f"[WARN] Failed to deserialize engine with TensorRT {trt.__version__}: {e}")
+            print("[WARN] Ensure the runtime TensorRT version is at least as new as the one used to build the engine.")
             return
 
     try:
@@ -50,7 +59,7 @@ def binding_summary_with_tensorrt(engine_path: str):
             print(f"  - {'INPUT ' if is_input else 'OUTPUT'} {i}: {name:30s} shape={tuple(shape)} dtype={dtype}")
     except AttributeError:
         # TensorRT 10 APIs
-        trt_major = int(trt.__version__.split(".")[0])
+        trt_major = int(trt.__version__.split('.')[0])
         if trt_major >= 10 and hasattr(engine, "num_io_tensors"):
             nb = engine.num_io_tensors
             print(f"[INFO] num_io_tensors: {nb}")
@@ -62,7 +71,8 @@ def binding_summary_with_tensorrt(engine_path: str):
                 io = "INPUT " if mode == trt.TensorIOMode.INPUT else "OUTPUT"
                 print(f"  - {io} {i}: {name:30s} shape={tuple(shape)} dtype={dtype}")
         else:
-            print("[WARN] Please use the same or a newer TensorRT version to deserialize the engine.")
+            print("[WARN] Ensure the runtime TensorRT version is at least as new as the one used to build the engine.")
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -79,6 +89,7 @@ def main():
     print_trtexec_info(args.engine)
 
     print("\n[CHECK] Manually verify input channel C=1 in the binding shape (second dimension).")
+
 
 if __name__ == "__main__":
     main()
