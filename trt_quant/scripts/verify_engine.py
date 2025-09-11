@@ -31,9 +31,15 @@ def binding_summary_with_tensorrt(engine_path: str):
         return
     logger = trt.Logger(trt.Logger.ERROR)
     with open(engine_path, "rb") as f, trt.Runtime(logger) as rt:
-        engine = rt.deserialize_cuda_engine(f.read())
+        try:
+            engine = rt.deserialize_cuda_engine(f.read())
+        except Exception as e:
+            print(f"[WARN] Failed to deserialize engine: {e}")
+            print("[WARN] Please use the same or a newer TensorRT version to deserialize the engine.")
+            return
+
     try:
-        # TRT 8:
+        # Legacy APIs (TensorRT 8/9)
         nb = engine.num_bindings
         print(f"[INFO] num_bindings: {nb}")
         for i in range(nb):
@@ -43,8 +49,20 @@ def binding_summary_with_tensorrt(engine_path: str):
             dtype = engine.get_binding_dtype(i)
             print(f"  - {'INPUT ' if is_input else 'OUTPUT'} {i}: {name:30s} shape={tuple(shape)} dtype={dtype}")
     except AttributeError:
-        # TRT 9 new APIs (if needed, extend here)
-        print("[WARN] Please extend for newer TensorRT API versions.")
+        # TensorRT 10 APIs
+        trt_major = int(trt.__version__.split(".")[0])
+        if trt_major >= 10 and hasattr(engine, "num_io_tensors"):
+            nb = engine.num_io_tensors
+            print(f"[INFO] num_io_tensors: {nb}")
+            for i in range(nb):
+                name = engine.get_tensor_name(i)
+                mode = engine.get_tensor_mode(name)
+                shape = engine.get_tensor_shape(name)
+                dtype = engine.get_tensor_dtype(name)
+                io = "INPUT " if mode == trt.TensorIOMode.INPUT else "OUTPUT"
+                print(f"  - {io} {i}: {name:30s} shape={tuple(shape)} dtype={dtype}")
+        else:
+            print("[WARN] Please use the same or a newer TensorRT version to deserialize the engine.")
 
 def main():
     ap = argparse.ArgumentParser()
