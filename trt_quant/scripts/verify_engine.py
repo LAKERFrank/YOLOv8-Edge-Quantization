@@ -15,6 +15,8 @@ def print_trtexec_info(engine_path: str):
         print("[WARN] trtexec command not found; ensure TensorRT is installed and in PATH.")
         return
 
+    print(f"[INFO] trtexec: {trtexec}")
+
     cmd = [
         trtexec,
         f"--loadEngine={engine_path}",
@@ -29,7 +31,7 @@ def print_trtexec_info(engine_path: str):
         print("=====================================")
     except subprocess.CalledProcessError as e:
         last = e.stdout.strip().splitlines()[-1] if e.stdout else ""
-        print(f"[WARN] trtexec failed (returncode {e.returncode}): {last}")
+        print(f"[WARN] trtexec ({trtexec}) failed (returncode {e.returncode}): {last}")
 
 
 def binding_summary_with_tensorrt(engine_path: str):
