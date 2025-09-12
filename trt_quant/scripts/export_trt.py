@@ -6,7 +6,6 @@ Export TensorRT engine from a YOLO(.pt) model.
 - Requires Ultralytics + TensorRT-capable environment with `trtexec` available.
 """
 import argparse, os, shutil, subprocess, sys
-from ultralytics import YOLO
 
 
 def to_trt_shape(s: str) -> str:
@@ -26,11 +25,13 @@ def main():
     ap.add_argument("--minshape", default="1,1,480,640")
     ap.add_argument("--optshape", default="1,1,640,640")
     ap.add_argument("--maxshape", default="1,1,1080,1920")
-    ap.add_argument("--outdir", default="trt_quant/engine")
+    ap.add_argument("--outdir", default="trt_quant/engine", help="directory for ONNX and engine")
     ap.add_argument("--name", default=None, help="output engine name (auto if None)")
     ap.add_argument("--trtexec", default="trtexec", help="path to trtexec binary")
     ap.add_argument("--calib", default=None, help="calibration cache/data path for INT8")
     args = ap.parse_args()
+
+    from ultralytics import YOLO  # local import so --help works without ultralytics
 
     os.makedirs(args.outdir, exist_ok=True)
 
@@ -49,6 +50,12 @@ def main():
     print("[INFO] Exporting ONNX with args:", onnx_kwargs)
     onnx_path = model.export(**onnx_kwargs)  # returns path to .onnx
 
+    # move ONNX into outdir for consistency
+    onnx_out = os.path.join(args.outdir, os.path.basename(onnx_path))
+    if os.path.abspath(onnx_path) != os.path.abspath(onnx_out):
+        shutil.move(onnx_path, onnx_out)
+    onnx_path = onnx_out
+
     tmp_engine = os.path.join(args.outdir, "tmp.engine")
     cmd = [
         args.trtexec,
@@ -64,8 +71,6 @@ def main():
                 f"--maxShapes=images:{to_trt_shape(args.maxshape)}",
             ]
         )
-    else:
-        cmd.append(f"--shapes=images:{to_trt_shape(args.optshape)}")
 
     if args.int8:
         cmd.append("--int8")

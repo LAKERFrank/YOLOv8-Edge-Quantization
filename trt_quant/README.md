@@ -34,7 +34,7 @@ channels: 1
 
 ## 3) Export TensorRT engine
 
-Export flow: `.pt -> .onnx -> trtexec build`. Requires TensorRT 10.7 (container 24.12) with `trtexec` available.
+Export flow: `.pt -> .onnx -> trtexec build`. ONNX and engine files are saved to `--outdir`. Requires TensorRT 10.7 (container 24.12) with `trtexec` available.
 
 ### INT8
 ```bash
@@ -55,6 +55,8 @@ python trt_quant/scripts/export_trt.py \
   --minshape 1,1,480,640 --optshape 1,1,640,640 --maxshape 1,1,1080,1920 \
   --outdir trt_quant/engine --name pose_fp16.engine
 ```
+
+Shape flags are only required when `--dynamic` is set; omit them for static models.
 
 ## 4) Verify engine
 ```bash
