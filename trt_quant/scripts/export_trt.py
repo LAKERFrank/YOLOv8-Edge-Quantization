@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Export TensorRT engine from a YOLO(.pt) model with INT8 PTQ.
-- Requires Ultralytics + TensorRT-capable environment.
+Export TensorRT engine from a YOLO(.pt) model.
+- Flow: .pt -> .onnx -> trtexec build (INT8/FP16/FP32)
+- Requires Ultralytics + TensorRT-capable environment with `trtexec` available.
 """
-import argparse, os, shutil, sys
+import argparse, os, shutil, subprocess, sys
 from ultralytics import YOLO
 
-def parse_shape(s: str):
-    # "1,1,640,640" -> (1,1,640,640)
-    return tuple(int(x) for x in s.split(","))
+
+def to_trt_shape(s: str) -> str:
+    # "1,1,640,640" -> "1x1x640x640"
+    return "x".join(s.split(","))
 
 def main():
     ap = argparse.ArgumentParser()
@@ -26,6 +28,8 @@ def main():
     ap.add_argument("--maxshape", default="1,1,1080,1920")
     ap.add_argument("--outdir", default="trt_quant/engine")
     ap.add_argument("--name", default=None, help="output engine name (auto if None)")
+    ap.add_argument("--trtexec", default="trtexec", help="path to trtexec binary")
+    ap.add_argument("--calib", default=None, help="calibration cache/data path for INT8")
     args = ap.parse_args()
 
     os.makedirs(args.outdir, exist_ok=True)
@@ -33,53 +37,53 @@ def main():
     print(f"[INFO] Loading model: {args.model}")
     model = YOLO(args.model)
 
-    export_kwargs = dict(
-        format="engine",
+    onnx_kwargs = dict(
+        format="onnx",
         imgsz=args.imgsz,
         batch=args.batch,
-        device=args.device
+        device=args.device,
     )
     if args.dynamic:
-        export_kwargs["dynamic"] = True
-        # TensorRT workspace size in GB (ignored if unsupported).
-        try:
-            export_kwargs["workspace"] = 2
-        except Exception:
-            pass
-        # Pack optimization profiles (min,opt,max). Some Ultralytics versions
-        # do not accept the "shape" argument, so export will fallback below.
-        export_kwargs["shape"] = (
-            parse_shape(args.minshape),
-            parse_shape(args.optshape),
-            parse_shape(args.maxshape),
+        onnx_kwargs["dynamic"] = True
+
+    print("[INFO] Exporting ONNX with args:", onnx_kwargs)
+    onnx_path = model.export(**onnx_kwargs)  # returns path to .onnx
+
+    tmp_engine = os.path.join(args.outdir, "tmp.engine")
+    cmd = [
+        args.trtexec,
+        f"--onnx={onnx_path}",
+        f"--saveEngine={tmp_engine}",
+    ]
+
+    if args.dynamic:
+        cmd.extend(
+            [
+                f"--minShapes=images:{to_trt_shape(args.minshape)}",
+                f"--optShapes=images:{to_trt_shape(args.optshape)}",
+                f"--maxShapes=images:{to_trt_shape(args.maxshape)}",
+            ]
         )
+    else:
+        cmd.append(f"--shapes=images:{to_trt_shape(args.optshape)}")
 
     if args.int8:
-        export_kwargs["int8"] = True
-        export_kwargs["data"] = args.data
+        cmd.append("--int8")
+        if args.calib:
+            cmd.append(f"--calib={args.calib}")
         tag = "int8"
     elif args.fp16:
-        export_kwargs["half"] = True
+        cmd.append("--fp16")
         tag = "fp16"
     else:
         tag = "fp32"
 
-    print("[INFO] Exporting TensorRT engine with args:", export_kwargs)
-    try:
-        engine_path = model.export(**export_kwargs)  # returns path to .engine
-    except SyntaxError as e:
-        if "shape" in str(e):
-            print("[WARN] 'shape' arg unsupported by this Ultralytics version; retrying without it")
-            export_kwargs.pop("shape", None)
-            print("[INFO] Exporting TensorRT engine with args:", export_kwargs)
-            engine_path = model.export(**export_kwargs)
-        else:
-            raise
+    print("[INFO] Running trtexec:", " ".join(cmd))
+    subprocess.check_call(cmd)
 
-    # Move/rename into outdir
     out_name = args.name or f"pose_{tag}.engine"
     out_path = os.path.join(args.outdir, out_name)
-    shutil.move(engine_path, out_path)
+    shutil.move(tmp_engine, out_path)
     print(f"[OK] Saved: {out_path}")
 
 if __name__ == "__main__":

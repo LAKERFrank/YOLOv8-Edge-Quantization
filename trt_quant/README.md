@@ -34,11 +34,12 @@ channels: 1
 
 ## 3) Export TensorRT engine
 
+Export flow: `.pt -> .onnx -> trtexec build`. Requires TensorRT 10.7 (container 24.12) with `trtexec` available.
+
 ### INT8
 ```bash
 python trt_quant/scripts/export_trt.py \
   --model /path/to/your_pose_1ch.pt \
-  --data trt_quant/calib/calib.yaml \
   --int8 --imgsz 640 --batch 1 --device 0 \
   --dynamic \
   --minshape 1,1,480,640 --optshape 1,1,640,640 --maxshape 1,1,1080,1920 \
