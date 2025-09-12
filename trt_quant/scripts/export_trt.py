@@ -1,17 +1,29 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-Export TensorRT engine from a YOLO(.pt) model with INT8 PTQ.
-- Requires Ultralytics + TensorRT-capable environment.
-"""
-import argparse, os, shutil, sys
-from ultralytics import YOLO
+"""Export a TensorRT engine from a YOLO (.pt) model using trtexec.
 
-def parse_shape(s: str):
-    # "1,1,640,640" -> (1,1,640,640)
-    return tuple(int(x) for x in s.split(","))
+Flow: .pt -> .onnx via Ultralytics -> trtexec build (INT8/FP16/FP32).
+"""
+import argparse
+import os
+import shlex
+import shutil
+import subprocess
+import sys
+from pathlib import Path
 
-def main():
+
+def parse_shape(shape: str):
+    """"1,1,640,640" -> (1, 1, 640, 640)."""
+    return tuple(int(x) for x in shape.split(","))
+
+
+def shape_to_trtexec(shape: str) -> str:
+    """Convert comma-separated dims to '1x1x640x640' for trtexec."""
+    return "x".join(shape.split(","))
+
+
+def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True, help="path to YOLO .pt (1ch)")
     ap.add_argument("--data", default="trt_quant/calib/calib.yaml", help="data yaml for INT8 calibration")
@@ -24,63 +36,98 @@ def main():
     ap.add_argument("--minshape", default="1,1,480,640")
     ap.add_argument("--optshape", default="1,1,640,640")
     ap.add_argument("--maxshape", default="1,1,1080,1920")
+    ap.add_argument("--workspace", type=int, default=2048, help="builder workspace (MB)")
     ap.add_argument("--outdir", default="trt_quant/engine")
     ap.add_argument("--name", default=None, help="output engine name (auto if None)")
     args = ap.parse_args()
 
-    os.makedirs(args.outdir, exist_ok=True)
-
-    print(f"[INFO] Loading model: {args.model}")
-    model = YOLO(args.model)
-
-    export_kwargs = dict(
-        format="engine",
+    onnx_kwargs = dict(
+        format="onnx",
         imgsz=args.imgsz,
         batch=args.batch,
-        device=args.device
+        device=args.device,
     )
     if args.dynamic:
-        export_kwargs["dynamic"] = True
-        # TensorRT workspace size in GB (ignored if unsupported).
-        try:
-            export_kwargs["workspace"] = 2
-        except Exception:
-            pass
-        # Pack optimization profiles (min,opt,max). Some Ultralytics versions
-        # do not accept the "shape" argument, so export will fallback below.
-        export_kwargs["shape"] = (
+        onnx_kwargs["dynamic"] = True
+        onnx_kwargs["shape"] = (
             parse_shape(args.minshape),
             parse_shape(args.optshape),
             parse_shape(args.maxshape),
         )
 
     if args.int8:
-        export_kwargs["int8"] = True
-        export_kwargs["data"] = args.data
+        onnx_kwargs["int8"] = True
+        onnx_kwargs["data"] = args.data
         tag = "int8"
     elif args.fp16:
-        export_kwargs["half"] = True
+        onnx_kwargs["half"] = True
         tag = "fp16"
     else:
         tag = "fp32"
 
-    print("[INFO] Exporting TensorRT engine with args:", export_kwargs)
     try:
-        engine_path = model.export(**export_kwargs)  # returns path to .engine
+        from ultralytics import YOLO
+    except Exception as exc:  # pragma: no cover - missing dependency
+        print(f"[ERROR] Ultralytics not available: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    os.makedirs(args.outdir, exist_ok=True)
+    print(f"[INFO] Loading model: {args.model}")
+    model = YOLO(args.model)
+
+    print("[INFO] Exporting ONNX with args:", onnx_kwargs)
+    try:
+        onnx_path = Path(model.export(**onnx_kwargs))
     except SyntaxError as e:
         if "shape" in str(e):
             print("[WARN] 'shape' arg unsupported by this Ultralytics version; retrying without it")
-            export_kwargs.pop("shape", None)
-            print("[INFO] Exporting TensorRT engine with args:", export_kwargs)
-            engine_path = model.export(**export_kwargs)
+            onnx_kwargs.pop("shape", None)
+            print("[INFO] Exporting ONNX with args:", onnx_kwargs)
+            onnx_path = Path(model.export(**onnx_kwargs))
         else:
             raise
 
-    # Move/rename into outdir
-    out_name = args.name or f"pose_{tag}.engine"
-    out_path = os.path.join(args.outdir, out_name)
-    shutil.move(engine_path, out_path)
-    print(f"[OK] Saved: {out_path}")
+    engine_name = args.name or f"pose_{tag}.engine"
+    engine_path = Path(args.outdir) / engine_name
+
+    trtexec_bin = shutil.which("trtexec")
+    if not trtexec_bin:
+        print("[ERROR] trtexec not found on PATH", file=sys.stderr)
+        sys.exit(1)
+
+    cmd = [
+        trtexec_bin,
+        f"--onnx={onnx_path}",
+        f"--saveEngine={engine_path}",
+        "--explicitBatch",
+        f"--workspace={args.workspace}",
+    ]
+    if args.dynamic:
+        input_name = "images"
+        cmd += [
+            f"--minShapes={input_name}:{shape_to_trtexec(args.minshape)}",
+            f"--optShapes={input_name}:{shape_to_trtexec(args.optshape)}",
+            f"--maxShapes={input_name}:{shape_to_trtexec(args.maxshape)}",
+        ]
+    else:
+        cmd.append(f"--optShapes=images:{shape_to_trtexec(args.optshape)}")
+
+    if args.int8:
+        cmd.append("--int8")
+    elif args.fp16:
+        cmd.append("--fp16")
+
+    print("[INFO] Running:", " ".join(shlex.quote(c) for c in cmd))
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.stdout:
+        print(result.stdout)
+    if result.returncode != 0:
+        print(result.stderr, file=sys.stderr)
+        print(f"[ERROR] trtexec failed (returncode {result.returncode})", file=sys.stderr)
+        sys.exit(result.returncode)
+
+    print(f"[OK] Saved: {engine_path}")
+
 
 if __name__ == "__main__":
     main()
