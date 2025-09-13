@@ -2,7 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 Verify a TensorRT engine:
-- print input binding shapes (expect C=1)
+- print input and output binding shapes
+- assert that all input bindings have channel dimension C=1
 - (optional) call trtexec to dump layer precisions
 """
 import argparse, os, subprocess, sys
@@ -23,17 +24,21 @@ def print_trtexec_info(engine_path: str):
     except Exception as e:
         print(f"[WARN] trtexec not available or failed: {e}")
 
-def binding_summary_with_tensorrt(engine_path: str):
+def binding_summary_with_tensorrt(engine_path: str) -> bool:
+    """Print bindings and verify channel dimension is 1 for inputs."""
     try:
         import tensorrt as trt
     except Exception as e:
         print(f"[WARN] TensorRT python package not available: {e}")
-        return
+        return False
+
     logger = trt.Logger(trt.Logger.ERROR)
     with open(engine_path, "rb") as f, trt.Runtime(logger) as rt:
         engine = rt.deserialize_cuda_engine(f.read())
+
+    ok = True
     try:
-        # TRT 8:
+        # TRT 8 API
         nb = engine.num_bindings
         print(f"[INFO] num_bindings: {nb}")
         for i in range(nb):
@@ -41,10 +46,22 @@ def binding_summary_with_tensorrt(engine_path: str):
             is_input = engine.binding_is_input(i)
             shape = engine.get_binding_shape(i)
             dtype = engine.get_binding_dtype(i)
-            print(f"  - {'INPUT ' if is_input else 'OUTPUT'} {i}: {name:30s} shape={tuple(shape)} dtype={dtype}")
+            print(
+                f"  - {'INPUT ' if is_input else 'OUTPUT'} {i}: {name:30s} "
+                f"shape={tuple(shape)} dtype={dtype}"
+            )
+            if is_input and len(shape) > 1:
+                if shape[1] != 1:
+                    print(
+                        f"    [FAIL] expected channel dimension 1 but got {shape[1]}"
+                    )
+                    ok = False
+                else:
+                    print("    [PASS] channel dimension is 1")
     except AttributeError:
         # TRT 9 new APIs (if needed, extend here)
         print("[WARN] Please extend for newer TensorRT API versions.")
+    return ok
 
 def main():
     ap = argparse.ArgumentParser()
@@ -55,12 +72,16 @@ def main():
         raise SystemExit(f"Engine not found: {args.engine}")
 
     print("[STEP] TensorRT API binding summary")
-    binding_summary_with_tensorrt(args.engine)
+    ok = binding_summary_with_tensorrt(args.engine)
 
     print("\n[STEP] trtexec layer info (if available)")
     print_trtexec_info(args.engine)
 
-    print("\n[CHECK] Manually verify input channel C=1 in the binding shape (second dimension).")
+    if not ok:
+        print("\n[CHECK] Input channel dimension is not 1!")
+        sys.exit(1)
+    else:
+        print("\n[CHECK] All input channel dimensions are 1")
 
 if __name__ == "__main__":
     main()
