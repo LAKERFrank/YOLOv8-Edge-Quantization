@@ -33,9 +33,14 @@ def main():
     if hasattr(model, "model") and hasattr(model.model, "args"):
         model.model.args["ch"] = args.channels
         model.model.args["kpt_shape"] = tuple(args.kpt_shape)
+        if hasattr(model.model, "ch"):
+            model.model.ch = args.channels
+        if hasattr(model.model, "kpt_shape"):
+            model.model.kpt_shape = tuple(args.kpt_shape)
     if hasattr(model, "overrides"):
-        model.overrides["channels"] = args.channels
-        model.overrides["kpt_shape"] = tuple(args.kpt_shape)
+        # Use recognized key 'ch' to override input channels without passing
+        # unsupported arguments to the Ultralytics runtime
+        model.overrides["ch"] = args.channels
 
     results = model.predict(
         source=args.source,
