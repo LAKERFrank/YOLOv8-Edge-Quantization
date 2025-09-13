@@ -30,9 +30,12 @@ def main():
     # Explicitly pass task to avoid incorrect automatic guessing
     model = YOLO(args.engine, task=args.task)
     # Ensure channel count and keypoint shape match engine expectation when metadata is absent
-    if hasattr(model, "predictor") and hasattr(model.predictor, "overrides"):
-        model.predictor.overrides["channels"] = args.channels
-        model.predictor.overrides["kpt_shape"] = tuple(args.kpt_shape)
+    if hasattr(model, "model") and hasattr(model.model, "args"):
+        model.model.args["ch"] = args.channels
+        model.model.args["kpt_shape"] = tuple(args.kpt_shape)
+    if hasattr(model, "overrides"):
+        model.overrides["channels"] = args.channels
+        model.overrides["kpt_shape"] = tuple(args.kpt_shape)
 
     results = model.predict(
         source=args.source,
@@ -42,8 +45,6 @@ def main():
         save=args.save,
         stream=True,
         verbose=False,
-        channels=args.channels,
-        kpt_shape=tuple(args.kpt_shape),
     )
 
     n_imgs = 0
