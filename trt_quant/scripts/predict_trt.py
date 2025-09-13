@@ -4,7 +4,7 @@
 Run inference with a TensorRT engine using Ultralytics runtime.
 Works for YOLO-Pose engine produced by export_trt.py.
 """
-import argparse, os
+import argparse
 from ultralytics import YOLO
 
 def main():
@@ -17,16 +17,34 @@ def main():
     ap.add_argument("--conf", type=float, default=0.25)
     ap.add_argument("--task", default="pose", help="model task type (detect, pose, etc.)")
     ap.add_argument("--channels", type=int, default=1, help="input channels of the engine")
+    ap.add_argument(
+        "--kpt-shape",
+        type=int,
+        nargs=2,
+        default=(17, 3),
+        metavar=("NUM", "DIM"),
+        help="keypoint shape as two ints: number of keypoints and dimensions",
+    )
     args = ap.parse_args()
 
     # Explicitly pass task to avoid incorrect automatic guessing
     model = YOLO(args.engine, task=args.task)
-    # Ensure channel count matches engine expectation when metadata is absent
+    # Ensure channel count and keypoint shape match engine expectation when metadata is absent
     if hasattr(model, "predictor") and hasattr(model.predictor, "overrides"):
         model.predictor.overrides["channels"] = args.channels
+        model.predictor.overrides["kpt_shape"] = tuple(args.kpt_shape)
 
-    results = model.predict(source=args.source, imgsz=args.imgsz, device=args.device,
-                            conf=args.conf, save=args.save, stream=True, verbose=False)
+    results = model.predict(
+        source=args.source,
+        imgsz=args.imgsz,
+        device=args.device,
+        conf=args.conf,
+        save=args.save,
+        stream=True,
+        verbose=False,
+        channels=args.channels,
+        kpt_shape=tuple(args.kpt_shape),
+    )
 
     n_imgs = 0
     for r in results:
