@@ -4,7 +4,11 @@
 Run inference with a TensorRT engine using Ultralytics runtime.
 Works for YOLO-Pose engine produced by export_trt.py.
 """
+
 import argparse
+from pathlib import Path
+
+import cv2
 from ultralytics import YOLO
 
 def main():
@@ -29,6 +33,7 @@ def main():
 
     # Explicitly pass task to avoid incorrect automatic guessing
     model = YOLO(args.engine, task=args.task)
+
     # Ensure channel count and keypoint shape match engine expectation when metadata is absent
     if hasattr(model, "model") and hasattr(model.model, "args"):
         model.model.args["ch"] = args.channels
@@ -38,8 +43,18 @@ def main():
         if hasattr(model.model, "kpt_shape"):
             model.model.kpt_shape = tuple(args.kpt_shape)
 
+    # Convert source to grayscale when engine expects single channel
+    src = args.source
+    if args.channels == 1:
+        p = Path(src)
+        if p.is_file():
+            img = cv2.imread(str(p), cv2.IMREAD_GRAYSCALE)
+            if img is None:
+                raise FileNotFoundError(p)
+            src = img[:, :, None]
+
     results = model.predict(
-        source=args.source,
+        source=src,
         imgsz=args.imgsz,
         device=args.device,
         conf=args.conf,
