@@ -47,7 +47,18 @@ def engine_channels(engine_path: str) -> int:
     logger = trt.Logger(trt.Logger.ERROR)
     with open(engine_path, "rb") as f, trt.Runtime(logger) as rt:
         engine = rt.deserialize_cuda_engine(f.read())
-    shape = engine.get_binding_shape(0)
+    # TensorRT <10 uses binding indices, >=10 relies on tensor names
+    if hasattr(engine, "get_binding_shape"):
+        shape = engine.get_binding_shape(0)
+    else:
+        shape = None
+        for i in range(engine.num_io_tensors):
+            name = engine.get_tensor_name(i)
+            if engine.get_tensor_mode(name) == trt.TensorIOMode.INPUT:
+                shape = engine.get_tensor_shape(name)
+                break
+        if shape is None:
+            return 3
     return shape[1] if len(shape) >= 4 else 3
 
 
