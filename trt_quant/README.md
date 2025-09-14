@@ -66,11 +66,16 @@ python trt_quant/scripts/verify_engine.py --engine trt_quant/engine/pose_int8.en
 ```
 
 ## 5) Quick inference
+Use `predict_trt.py` to run the exported engine on an image or video. Bounding boxes and keypoints are printed for each frame, and annotated results are saved to `runs/predict`.
+
 ```bash
 python trt_quant/scripts/predict_trt.py \
   --engine trt_quant/engine/pose_int8.engine \
-  --source /path/to/test_images_or_video --imgsz 640 --device 0 --save
+  --source /path/to/test.jpg \
+  --imgsz 640 --device 0 --save
 ```
+
+Replace `test.jpg` with a video file to process a video. Add `--show` to display the output in a window while running.
 
 ## 6) Compare FP32(.pt) vs INT8(.engine)
 ```bash
