@@ -69,20 +69,20 @@ def mono_sources(src: str) -> Iterable:
         for im_path in sorted(p.iterdir()):
             img = cv2.imread(str(im_path), cv2.IMREAD_GRAYSCALE)
             if img is not None:
-                yield img
+                yield img[..., None]
     elif p.suffix.lower() in {".mp4", ".avi", ".mov", ".mkv", ".mpg", ".mpeg"}:
         cap = cv2.VideoCapture(str(p))
         while True:
             ret, frame = cap.read()
             if not ret:
                 break
-            yield cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            yield cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)[..., None]
         cap.release()
     else:
         img = cv2.imread(str(p), cv2.IMREAD_GRAYSCALE)
         if img is None:
             raise FileNotFoundError(src)
-        yield img
+        yield img[..., None]
 
 
 def main() -> None:
