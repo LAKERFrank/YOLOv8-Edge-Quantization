@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Compare FP32 ``.pt`` vs INT8 ``.engine`` results (boxes & keypoints).
+"""Compare FP32 ``.pt`` vs INT8 ``.engine`` results (boxes & keypoints) and
+benchmark inference speed.
 
 For each image the script runs the PyTorch model using the Ultralytics
 pipeline, but executes the TensorRT engine manually in order to support
 single-channel models (e.g. INT8 pose engines built from grayscale
 inputs). Detections from the two models are matched greedily by IoU and
-MAE/MAX metrics are reported for matched boxes and keypoints.
+MAE/MAX metrics are reported for matched boxes and keypoints along with
+average inference time for each model.
 """
 
 import argparse
 import glob
 import os
+import time
 import numpy as np
 from ultralytics import YOLO
 
@@ -233,6 +236,7 @@ def main():
 
     import cv2
     import pycuda.driver as cuda
+    import torch
 
     cuda.init()
     dev = cuda.Device(int(args.device))
@@ -243,12 +247,16 @@ def main():
 
     mae_boxes_all, max_boxes_all = [], []
     mae_kpts_all, max_kpts_all = [], []
+    pt_times, trt_times = [], []
     skipped = 0
 
     try:
         for p in imgs:
+            start = time.perf_counter()
             r_pt = m_pt.predict(source=p, imgsz=args.imgsz, device=args.device,
                                 conf=args.conf, save=False, stream=False, verbose=False)[0]
+            torch.cuda.synchronize()
+            pt_times.append(time.perf_counter() - start)
 
             frame = cv2.imread(p, cv2.IMREAD_UNCHANGED)
             if frame is None:
@@ -257,9 +265,12 @@ def main():
 
             ctx.push()
             try:
+                t0 = time.perf_counter()
                 b_boxes, b_kpts_full = infer(engine, context, trt_module, frame, c_dim,
                                              args.imgsz, args.conf, args.iou_thr,
                                              args.nkpt, args.nc)
+                cuda.Context.synchronize()
+                trt_times.append(time.perf_counter() - t0)
             finally:
                 ctx.pop()
             b_kpts = b_kpts_full[..., :2]
@@ -283,17 +294,39 @@ def main():
     finally:
         ctx.detach()
 
-    def summarize(name, arr_mae, arr_max):
+    def stats(arr_mae, arr_max):
         arr_mae = np.array([x for x in arr_mae if not np.isnan(x)], dtype=np.float32)
         arr_max = np.array([x for x in arr_max if not np.isnan(x)], dtype=np.float32)
         if arr_mae.size == 0:
-            print(f"{name}: no matched samples.")
-        else:
-            print(f"{name}: MAE={arr_mae.mean():.6f}  MAX={arr_max.max():.6f}  (N={arr_mae.size})")
+            return None
+        return arr_mae.mean(), arr_max.max(), arr_mae.size
+
+    box_stats = stats(mae_boxes_all, max_boxes_all)
+    kpt_stats = stats(mae_kpts_all, max_kpts_all)
 
     print("\n[RESULT] FP32 vs INT8 (result-level)")
-    summarize("Boxes (xyxy)", mae_boxes_all, max_boxes_all)
-    summarize("Keypoints (x,y)", mae_kpts_all, max_kpts_all)
+    header = f"{'Metric':<18}{'MAE':>12}{'MAX':>12}{'N':>8}"
+    print(header)
+    print("-" * len(header))
+    if box_stats:
+        print(f"{'Boxes (xyxy)':<18}{box_stats[0]:>12.6f}{box_stats[1]:>12.6f}{box_stats[2]:>8}")
+    else:
+        print(f"{'Boxes (xyxy)':<18}{'n/a':>12}{'n/a':>12}{0:>8}")
+    if kpt_stats:
+        print(f"{'Keypoints (x,y)':<18}{kpt_stats[0]:>12.6f}{kpt_stats[1]:>12.6f}{kpt_stats[2]:>8}")
+    else:
+        print(f"{'Keypoints (x,y)':<18}{'n/a':>12}{'n/a':>12}{0:>8}")
+
+    if pt_times and trt_times:
+        print("\n[PERFORMANCE] Average inference time")
+        perf_header = f"{'Model':<10}{'ms/img':>12}{'FPS':>12}"
+        print(perf_header)
+        print("-" * len(perf_header))
+        pt_avg = float(np.mean(pt_times))
+        trt_avg = float(np.mean(trt_times))
+        print(f"{'PyTorch':<10}{pt_avg*1000:>12.2f}{1/(pt_avg+1e-9):>12.2f}")
+        print(f"{'TensorRT':<10}{trt_avg*1000:>12.2f}{1/(trt_avg+1e-9):>12.2f}")
+
     print(f"Skipped images (no matches): {skipped}")
 
 if __name__ == "__main__":
