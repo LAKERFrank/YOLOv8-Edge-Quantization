@@ -63,13 +63,15 @@ def main():
     ap.add_argument("--device", default=0)
     ap.add_argument("--conf", type=float, default=0.25)
     ap.add_argument("--iou_thr", type=float, default=0.3)
+    ap.add_argument("--task", default="detect",
+                    help="model task type, e.g. detect, pose, segment, classify, obb")
     args = ap.parse_args()
 
     imgs = sorted([p for p in glob.glob(os.path.join(args.images, "*")) if os.path.isfile(p)])
     if not imgs: raise SystemExit(f"No images in {args.images}")
 
-    m_pt = YOLO(args.pt)
-    m_trt = YOLO(args.engine)
+    m_pt = YOLO(args.pt, task=args.task)
+    m_trt = YOLO(args.engine, task=args.task)
 
     mae_boxes_all, max_boxes_all = [], []
     mae_kpts_all,  max_kpts_all  = [], []
