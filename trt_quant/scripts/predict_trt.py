@@ -38,7 +38,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--show", action="store_true", help="display predictions")
     ap.add_argument("--nc", type=int, default=1, help="number of classes")
     ap.add_argument("--nkpt", type=int, default=17, help="number of keypoints")
-    add_ll_flags(ap)
+    add_ll_flags(ap)  # adds --ll-enhance/--ll-gamma/--ll-clahe/--ll-clip/--ll-grid
     return ap.parse_args()
 
 

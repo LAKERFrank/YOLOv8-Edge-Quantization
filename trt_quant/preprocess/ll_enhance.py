@@ -22,8 +22,12 @@ def add_ll_flags(ap: argparse.ArgumentParser):
                     help="啟用低亮度強化 (Gamma + CLAHE)")
     ap.add_argument("--ll-gamma", type=float, default=0.85,
                     help="gamma < 1 會提亮暗部；=1 不變")
-    ap.add_argument("--ll-clahe", action="store_true", default=True,
-                    help="是否啟用 CLAHE")
+    ap.add_argument(
+        "--ll-clahe",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="是否啟用 CLAHE",
+    )
     ap.add_argument("--ll-clip", type=float, default=2.0,
                     help="CLAHE clipLimit")
     ap.add_argument("--ll-grid", type=int, default=8,
