@@ -91,6 +91,25 @@ Replace `test.jpg` with a video file or a directory of images to process
 multiple frames. Add `--show` to display the output in a window while
 running.
 
+### Standalone preprocessing helper
+The low-light routine is also available as a Python helper. Import
+`preprocess_for_trt` to convert a BGR or grayscale image into an NCHW
+tensor while applying optional enhancement:
+
+```python
+import cv2 as cv
+from trt_quant.preprocess import preprocess_for_trt
+
+img = cv.imread("dark_scene.jpg")  # BGR or gray
+tensor = preprocess_for_trt(img,
+                            enable=True,      # set False to skip enhancement
+                            gamma=0.85,
+                            use_clahe=True,
+                            clahe_clip=2.0,
+                            clahe_grid=8)
+# tensor: float32 [1,1,H,W] in range 0~1
+```
+
 ## 6) Compare FP32(.pt) vs INT8(.engine)
 ```bash
 python trt_quant/scripts/compare_pt_vs_trt.py \
