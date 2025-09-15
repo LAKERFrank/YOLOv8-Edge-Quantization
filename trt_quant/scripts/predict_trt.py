@@ -180,6 +180,8 @@ def infer(engine, context, trt_module, img: np.ndarray, c_dim: int, imgsz: int,
     context.execute_v2(bindings)
     out = np.empty(output_shape, dtype=dtype_out)
     cuda.memcpy_dtoh(out, d_output)
+    d_input.free()
+    d_output.free()
 
     cols = 5 + nc + nkpt * 3
     if out.size % cols != 0:  # engine may omit class probabilities
@@ -248,6 +250,7 @@ def main() -> None:
                 cv2.waitKey(1)
     finally:
         ctx.pop()
+        ctx.detach()
 
 
 if __name__ == "__main__":
