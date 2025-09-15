@@ -10,6 +10,18 @@ def is_image(p):
     ext = os.path.splitext(p)[1].lower()
     return ext in [".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"]
 
+
+def resize_with_padding(img, new_size, color=114):
+    h, w = img.shape[:2]
+    r = min(new_size / h, new_size / w)
+    new_w, new_h = int(round(w * r)), int(round(h * r))
+    img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+    pad_w, pad_h = new_size - new_w, new_size - new_h
+    top, bottom = pad_h // 2, pad_h - pad_h // 2
+    left, right = pad_w // 2, pad_w - pad_w // 2
+    return cv2.copyMakeBorder(img, top, bottom, left, right,
+                              cv2.BORDER_CONSTANT, value=color)
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--src", required=True, help="source folder of images")
@@ -40,7 +52,7 @@ def main():
             print(f"[skip] cannot read: {p}")
             continue
         if args.imgsz > 0:
-            g = cv2.resize(g, (args.imgsz, args.imgsz), interpolation=cv2.INTER_AREA)
+            g = resize_with_padding(g, args.imgsz)
         out = os.path.join(args.dst, f"calib_{i:04d}.png")
         cv2.imwrite(out, g)
 
