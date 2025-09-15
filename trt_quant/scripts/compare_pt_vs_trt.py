@@ -230,8 +230,6 @@ def main():
         raise SystemExit(f"No images in {args.images}")
 
     m_pt = YOLO(args.pt, task=args.task)
-    engine, context, trt_module = load_engine(args.engine)
-    c_dim = engine_channels(engine, trt_module)
 
     import cv2
     import pycuda.driver as cuda
@@ -239,6 +237,9 @@ def main():
     cuda.init()
     dev = cuda.Device(int(args.device))
     ctx = dev.make_context()
+    engine, context, trt_module = load_engine(args.engine)
+    c_dim = engine_channels(engine, trt_module)
+    ctx.pop()  # release so PyTorch can use its own context
 
     mae_boxes_all, max_boxes_all = [], []
     mae_kpts_all, max_kpts_all = [], []
@@ -253,9 +254,14 @@ def main():
             if frame is None:
                 skipped += 1
                 continue
-            b_boxes, b_kpts_full = infer(engine, context, trt_module, frame, c_dim,
-                                         args.imgsz, args.conf, args.iou_thr,
-                                         args.nkpt, args.nc)
+
+            ctx.push()
+            try:
+                b_boxes, b_kpts_full = infer(engine, context, trt_module, frame, c_dim,
+                                             args.imgsz, args.conf, args.iou_thr,
+                                             args.nkpt, args.nc)
+            finally:
+                ctx.pop()
             b_kpts = b_kpts_full[..., :2]
 
             a_boxes = to_xyxy(r_pt.boxes)
@@ -275,7 +281,6 @@ def main():
                     mae_kpts_all.append(mae_k)
                     max_kpts_all.append(max_k)
     finally:
-        ctx.pop()
         ctx.detach()
 
     def summarize(name, arr_mae, arr_max):
