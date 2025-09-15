@@ -60,14 +60,14 @@ Shape flags are only required when `--dynamic` is set; omit them for static mode
 
 ### Alternative: build INT8 from ONNX with custom calibration
 如果你已經有 1-channel 的 ONNX（例如透過 `export_trt.py --onnx-only` 產生），可以使用
-`scripts/trt_quant/build_int8.py` 直接建出兩顆 INT8 engine，並對關鍵層啟用 FP16 fallback。
+`trt_quant/scripts/build_int8.py` 直接建出兩顆 INT8 engine，並對關鍵層啟用 FP16 fallback。
 
 校正資料夾需放入「偏黑背景 + 後場遠距人物」的代表性影像（建議 1000–3000 張），下面以
 `trt_quant/calib/dark_small/` 為例：
 
 ```bash
 # MinMax 版本（預設）
-python trt_quant/scripts/trt_quant/build_int8.py \
+python trt_quant/scripts/build_int8.py \
   --onnx trt_quant/engine/pose_1ch.onnx \
   --out trt_quant/engine/pose_int8_minmax.engine \
   --calib-dir trt_quant/calib/dark_small \
@@ -75,7 +75,7 @@ python trt_quant/scripts/trt_quant/build_int8.py \
   --fp16-fallback "model.0,detect"
 
 # Entropy 版本（A/B 比較）
-python trt_quant/scripts/trt_quant/build_int8.py \
+python trt_quant/scripts/build_int8.py \
   --onnx trt_quant/engine/pose_1ch.onnx \
   --out trt_quant/engine/pose_int8_entropy.engine \
   --calib-dir trt_quant/calib/dark_small \
