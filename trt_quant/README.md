@@ -68,11 +68,12 @@ python trt_quant/scripts/verify_engine.py --engine trt_quant/engine/pose_int8.en
 ## 5) Quick inference
 `predict_trt.py` runs the TensorRT engine directly (no Ultralytics
 pipeline) on an image, video, or a directory of images. Bounding boxes
-and keypoints are printed for each frame, and annotated results are
-saved to `runs/predict`. Sources are converted to grayscale
-automatically when the engine expects a single-channel tensor. If your
-engine omits class probabilities (e.g. a single-class model), the script
-adjusts automatically; otherwise set `--nc` to match your class count.
+are drawn in blue with confidence labels and keypoints in `#f5ac36`.
+Annotated results are saved to `runs/predict`. Sources are converted to
+grayscale automatically when the engine expects a single-channel tensor.
+If your engine omits class probabilities (e.g. a single-class model),
+the script adjusts automatically; otherwise set `--nc` to match your
+class count.
 
 ```bash
 python trt_quant/scripts/predict_trt.py \

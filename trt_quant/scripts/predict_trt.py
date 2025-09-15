@@ -142,6 +142,8 @@ def infer(engine, context, trt_module, img: np.ndarray, c_dim: int, imgsz: int,
     if c_dim == 3 and img.ndim == 2:
         img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
     im0 = img.copy()
+    if im0.ndim == 2:
+        im0 = cv2.cvtColor(im0, cv2.COLOR_GRAY2BGR)
     img, ratio, (dw, dh) = letterbox(img, (imgsz, imgsz))
     if c_dim == 1:
         img = img[..., None]
@@ -212,12 +214,15 @@ def infer(engine, context, trt_module, img: np.ndarray, c_dim: int, imgsz: int,
     keep = nms(boxes, scores, iou)
     boxes, scores, kpts = boxes[keep], scores[keep], kpts[keep]
 
-    for box, kp in zip(boxes, kpts):
+    for box, score, kp in zip(boxes, scores, kpts):
         x1, y1, x2, y2 = map(int, box)
-        cv2.rectangle(im0, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        cv2.rectangle(im0, (x1, y1), (x2, y2), (255, 0, 0), 1)
+        label = f"{float(score):.2f}"
+        cv2.putText(im0, label, (x1, max(y1 - 2, 0)), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.4, (255, 0, 0), 1, cv2.LINE_AA)
         for x, y, c in kp:
             if c > 0:
-                cv2.circle(im0, (int(x), int(y)), 2, (0, 0, 255), -1)
+                cv2.circle(im0, (int(x), int(y)), 2, (54, 172, 245), -1)
     return im0, boxes, kpts
 
 
