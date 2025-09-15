@@ -154,24 +154,28 @@ def infer(engine, context, trt_module, img: np.ndarray, c_dim: int, imgsz: int,
         dtype_in = np.float32
         dtype_out = np.float32
         bindings = [None] * 2
+        in_idx, out_idx = 0, 1
     else:  # TRT >=10
-        in_name = next(n for n in [context.engine.get_tensor_name(i) for i in range(context.engine.num_io_tensors)]
-                      if context.engine.get_tensor_mode(n) == trt_module.TensorIOMode.INPUT)
-        out_name = next(n for n in [context.engine.get_tensor_name(i) for i in range(context.engine.num_io_tensors)]
-                       if context.engine.get_tensor_mode(n) == trt_module.TensorIOMode.OUTPUT)
+        in_idx = out_idx = None
+        for i in range(context.engine.num_io_tensors):
+            name = context.engine.get_tensor_name(i)
+            mode = context.engine.get_tensor_mode(name)
+            if mode == trt_module.TensorIOMode.INPUT:
+                in_name, in_idx = name, i
+            elif mode == trt_module.TensorIOMode.OUTPUT:
+                out_name, out_idx = name, i
+        assert in_idx is not None and out_idx is not None
         context.set_input_shape(in_name, img.shape)
         output_shape = context.get_tensor_shape(out_name)
         dtype_in = trt_module.nptype(context.engine.get_tensor_dtype(in_name))
         dtype_out = trt_module.nptype(context.engine.get_tensor_dtype(out_name))
         bindings = [0] * context.engine.num_io_tensors
-        bindings[context.engine.get_tensor_index(in_name)] = 0
-        bindings[context.engine.get_tensor_index(out_name)] = 0
 
     d_input = cuda.mem_alloc(img.nbytes)
     d_output = cuda.mem_alloc(np.prod(output_shape) * np.dtype(dtype_out).itemsize)
     cuda.memcpy_htod(d_input, img.astype(dtype_in))
-    bindings[0] = int(d_input)
-    bindings[1] = int(d_output)
+    bindings[in_idx] = int(d_input)
+    bindings[out_idx] = int(d_output)
     context.execute_v2(bindings)
     out = np.empty(output_shape, dtype=dtype_out)
     cuda.memcpy_dtoh(out, d_output)
