@@ -181,10 +181,22 @@ def infer(engine, context, trt_module, img: np.ndarray, c_dim: int, imgsz: int,
     out = np.empty(output_shape, dtype=dtype_out)
     cuda.memcpy_dtoh(out, d_output)
 
-    pred = out.reshape(-1, 5 + nc + nkpt * 3)
+    cols = 5 + nc + nkpt * 3
+    if out.size % cols != 0:  # engine may omit class probabilities
+        nc = 0
+        cols = 5 + nkpt * 3
+    if out.ndim == 3:
+        if out.shape[1] == cols:
+            pred = out[0].T
+        elif out.shape[2] == cols:
+            pred = out[0]
+        else:
+            pred = out.reshape(-1, cols)
+    else:
+        pred = out.reshape(-1, cols)
     boxes = pred[:, :4]
     obj = pred[:, 4]
-    cls = pred[:, 5:5 + nc]
+    cls = pred[:, 5:5 + nc] if nc else np.ones((pred.shape[0], 1), dtype=pred.dtype)
     kpts = pred[:, 5 + nc:]
     scores = obj * cls.max(1)
     keep = scores >= conf
