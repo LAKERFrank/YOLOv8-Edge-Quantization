@@ -75,6 +75,10 @@ If your engine omits class probabilities (e.g. a single-class model),
 the script adjusts automatically; otherwise set `--nc` to match your
 class count.
 
+Optional low-light enhancement is available with `--ll-enhance`.
+Gamma, CLAHE clip limit, and grid size can be tuned via `--ll-gamma`,
+`--ll-clip`, and `--ll-grid` respectively.
+
 ```bash
 python trt_quant/scripts/predict_trt.py \
   --engine trt_quant/engine/pose_int8.engine \

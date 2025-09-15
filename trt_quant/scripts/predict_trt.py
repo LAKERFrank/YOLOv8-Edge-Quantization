@@ -13,6 +13,13 @@ import argparse
 from pathlib import Path
 from typing import Iterator, Tuple
 
+import sys
+
+# Allow importing modules from the parent directory
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+
+from preprocess import add_ll_flags, preprocess_for_trt
+
 try:  # numpy may be absent when only showing --help
     import numpy as np
 except Exception:  # pragma: no cover
@@ -31,6 +38,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--show", action="store_true", help="display predictions")
     ap.add_argument("--nc", type=int, default=1, help="number of classes")
     ap.add_argument("--nkpt", type=int, default=17, help="number of keypoints")
+    add_ll_flags(ap)
     return ap.parse_args()
 
 
@@ -133,12 +141,12 @@ def frames_from_source(src: str) -> Iterator[Tuple[np.ndarray, str | None]]:
 
 
 def infer(engine, context, trt_module, img: np.ndarray, c_dim: int, imgsz: int,
-          conf: float, iou: float, nkpt: int, nc: int):
+          conf: float, iou: float, nkpt: int, nc: int,
+          ll_enhance: bool, ll_gamma: float, ll_clahe: bool,
+          ll_clip: float, ll_grid: int):
     import cv2
     import pycuda.driver as cuda
 
-    if c_dim == 1 and img.ndim == 3:
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     if c_dim == 3 and img.ndim == 2:
         img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
     im0 = img.copy()
@@ -146,9 +154,10 @@ def infer(engine, context, trt_module, img: np.ndarray, c_dim: int, imgsz: int,
         im0 = cv2.cvtColor(im0, cv2.COLOR_GRAY2BGR)
     img, ratio, (dw, dh) = letterbox(img, (imgsz, imgsz))
     if c_dim == 1:
-        img = img[..., None]
-    img = img.astype(np.float32) / 255.0
-    img = np.transpose(img, (2, 0, 1))[None]
+        img = preprocess_for_trt(img, ll_enhance, ll_gamma, ll_clahe, ll_clip, ll_grid)
+    else:
+        img = img.astype(np.float32) / 255.0
+        img = np.transpose(img, (2, 0, 1))[None]
 
     if hasattr(context, "set_binding_shape"):
         context.set_binding_shape(0, img.shape)
@@ -244,8 +253,23 @@ def main() -> None:
             save_dir.mkdir(parents=True, exist_ok=True)
 
         for frame, name in frames_from_source(args.source):
-            im, boxes, kpts = infer(engine, context, trt_module, frame, c_dim,
-                                    args.imgsz, args.conf, args.iou, args.nkpt, args.nc)
+            im, boxes, kpts = infer(
+                engine,
+                context,
+                trt_module,
+                frame,
+                c_dim,
+                args.imgsz,
+                args.conf,
+                args.iou,
+                args.nkpt,
+                args.nc,
+                args.ll_enhance,
+                args.ll_gamma,
+                args.ll_clahe,
+                args.ll_clip,
+                args.ll_grid,
+            )
             print("Boxes (xyxy):", boxes.tolist())
             print("Keypoints (xy):", kpts[..., :2].tolist())
             if args.save and name is not None:
