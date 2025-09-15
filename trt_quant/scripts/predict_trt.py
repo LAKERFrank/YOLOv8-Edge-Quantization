@@ -172,7 +172,8 @@ def infer(engine, context, trt_module, img: np.ndarray, c_dim: int, imgsz: int,
         bindings = [0] * context.engine.num_io_tensors
 
     d_input = cuda.mem_alloc(img.nbytes)
-    d_output = cuda.mem_alloc(np.prod(output_shape) * np.dtype(dtype_out).itemsize)
+    out_bytes = int(np.prod(output_shape)) * np.dtype(dtype_out).itemsize
+    d_output = cuda.mem_alloc(out_bytes)
     cuda.memcpy_htod(d_input, img.astype(dtype_in))
     bindings[in_idx] = int(d_input)
     bindings[out_idx] = int(d_output)
