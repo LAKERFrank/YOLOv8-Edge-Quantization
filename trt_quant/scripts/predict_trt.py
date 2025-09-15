@@ -16,7 +16,7 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
-from typing import Iterable, List
+from typing import Iterable
 
 try:  # TensorRT is optional at runtime
     import tensorrt as trt
@@ -94,30 +94,52 @@ def main() -> None:
     c_dim = engine_channels(args.engine)
     model = YOLO(args.engine, task=args.task)
 
+    project = "runs"
+    name = "predict"
+
     if c_dim == 1:
         print("[INFO] engine expects single-channel input; converting source to grayscale")
-        src_iter: Iterable = mono_sources(args.source)
+        for frame in mono_sources(args.source):
+            results = model.predict(
+                source=frame,
+                imgsz=args.imgsz,
+                conf=args.conf,
+                device=args.device,
+                save=args.save,
+                show=args.show,
+                project=project,
+                name=name,
+                exist_ok=True,
+                verbose=False,
+            )
+            for r in results:
+                boxes = r.boxes
+                kpts = getattr(r, "keypoints", None)
+                if boxes is not None and len(boxes):
+                    print("Boxes (xyxy):", boxes.xyxy.cpu().numpy().tolist())
+                if kpts is not None and len(kpts):
+                    print("Keypoints (xy):", kpts.xy.cpu().numpy().tolist())
     else:
-        src_iter = args.source
-
-    results = model.predict(
-        source=src_iter,
-        imgsz=args.imgsz,
-        conf=args.conf,
-        device=args.device,
-        save=args.save,
-        show=args.show,
-        stream=True,
-        verbose=False,
-    )
-
-    for r in results:
-        boxes = r.boxes
-        kpts = getattr(r, "keypoints", None)
-        if boxes is not None and len(boxes):
-            print("Boxes (xyxy):", boxes.xyxy.cpu().numpy().tolist())
-        if kpts is not None and len(kpts):
-            print("Keypoints (xy):", kpts.xy.cpu().numpy().tolist())
+        results = model.predict(
+            source=args.source,
+            imgsz=args.imgsz,
+            conf=args.conf,
+            device=args.device,
+            save=args.save,
+            show=args.show,
+            stream=True,
+            project=project,
+            name=name,
+            exist_ok=True,
+            verbose=False,
+        )
+        for r in results:
+            boxes = r.boxes
+            kpts = getattr(r, "keypoints", None)
+            if boxes is not None and len(boxes):
+                print("Boxes (xyxy):", boxes.xyxy.cpu().numpy().tolist())
+            if kpts is not None and len(kpts):
+                print("Keypoints (xy):", kpts.xy.cpu().numpy().tolist())
 
 
 if __name__ == "__main__":
