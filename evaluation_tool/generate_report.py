@@ -1,0 +1,188 @@
+#!/usr/bin/env python3
+"""Aggregate trtexec artifacts into a concise report with visualisations."""
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import pandas as pd
+
+
+def load_json(path: Path) -> Dict:
+    with path.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def plot_latency_hist(latencies: pd.Series, out_png: Path) -> None:
+    if latencies.empty:
+        return
+    plt.figure(figsize=(10, 6))
+    plt.hist(latencies.values, bins=min(200, max(20, len(latencies) // 5)))
+    plt.title("Latency distribution")
+    plt.xlabel("Latency (ms)")
+    plt.ylabel("Count")
+    plt.tight_layout()
+    plt.savefig(out_png)
+    plt.close()
+    print(f"Wrote {out_png}")
+
+
+def plot_latency_percentiles(percentiles: List[Tuple[float, float]], out_png: Path) -> None:
+    if not percentiles:
+        return
+    percentiles = sorted(percentiles, key=lambda x: x[0])
+    xs, ys = zip(*percentiles)
+    plt.figure(figsize=(10, 5))
+    plt.plot(xs, ys, marker="o")
+    plt.title("Latency percentiles")
+    plt.xlabel("Percentile")
+    plt.ylabel("Latency (ms)")
+    plt.grid(True, linestyle="--", alpha=0.5)
+    plt.tight_layout()
+    plt.savefig(out_png)
+    plt.close()
+    print(f"Wrote {out_png}")
+
+
+def build_report_text(summary: Dict, top_layers: Optional[pd.DataFrame]) -> str:
+    lines = ["TensorRT Benchmark Summary", "===========================", ""]
+    throughput = summary.get("throughput_qps")
+    if throughput is not None:
+        lines.append(f"Throughput: {throughput:.3f} samples/sec")
+    latency = summary.get("latency", {})
+    if latency:
+        lines.append(
+            "Latency (ms): min={min:.3f}, mean={mean:.3f}, median={median:.3f}, p95={p95:.3f}, p99={p99:.3f}".format(
+                min=latency.get("min_ms", 0.0),
+                mean=latency.get("mean_ms", 0.0),
+                median=latency.get("median_ms", 0.0),
+                p95=latency.get("percentiles_ms", {}).get("p95", 0.0),
+                p99=latency.get("percentiles_ms", {}).get("p99", 0.0),
+            )
+        )
+    if summary.get("enqueue"):
+        enqueue = summary["enqueue"]
+        lines.append(
+            "Enqueue mean: {mean:.3f} ms, std={std:.3f} ms".format(
+                mean=enqueue.get("mean_ms", 0.0),
+                std=enqueue.get("std_ms", 0.0),
+            )
+        )
+    if summary.get("compute"):
+        compute = summary["compute"]
+        lines.append(
+            "Compute mean: {mean:.3f} ms, std={std:.3f} ms".format(
+                mean=compute.get("mean_ms", 0.0),
+                std=compute.get("std_ms", 0.0),
+            )
+        )
+    if top_layers is not None and not top_layers.empty:
+        lines.append("")
+        lines.append("Top layers (by avg time):")
+        for _, row in top_layers.head(10).iterrows():
+            lines.append(
+                f"- {row['name']}: {row['avg_time_ms']:.4f} ms ({row.get('percent_of_total', 0.0):.2f}% of total)"
+            )
+    return "\n".join(lines)
+
+
+def parse_percentiles(summary: Dict) -> List[Tuple[float, float]]:
+    percentiles_dict = summary.get("latency", {}).get("percentiles_ms", {})
+    parsed: List[Tuple[float, float]] = []
+    for key, value in percentiles_dict.items():
+        if not key.startswith("p"):
+            continue
+        try:
+            pct = float(key[1:].replace("_", "."))
+        except ValueError:
+            continue
+        parsed.append((pct, float(value)))
+    return parsed
+
+
+def maybe_plot_per_layer(top_layers: pd.DataFrame, out_png: Path, topk: int = 30) -> None:
+    if top_layers.empty:
+        return
+    subset = top_layers.head(topk)
+    plt.figure(figsize=(12, max(4, subset.shape[0] * 0.35)))
+    plt.barh(subset["name"].astype(str)[::-1], subset["avg_time_ms"][::-1])
+    plt.xlabel("Average time (ms)")
+    plt.ylabel("Layer")
+    plt.title(f"Top {subset.shape[0]} layers by average time")
+    plt.tight_layout()
+    plt.savefig(out_png)
+    plt.close()
+    print(f"Wrote {out_png}")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Generate consolidated benchmark report")
+    parser.add_argument("--artifacts", required=True, type=Path, help="Directory with trtexec outputs")
+    parser.add_argument("--topk", type=int, default=30, help="Number of layers to visualise in per-layer plot")
+    args = parser.parse_args()
+
+    artifacts_dir = args.artifacts
+    if not artifacts_dir.exists():
+        raise SystemExit(f"Artifacts directory {artifacts_dir} does not exist")
+
+    summary_path = artifacts_dir / "summary.json"
+    if not summary_path.exists():
+        raise SystemExit("summary.json not found. Run parse_trtexec_times.py first.")
+    summary = load_json(summary_path)
+
+    lat_series_path = artifacts_dir / "latency_series.csv"
+    latencies = None
+    if lat_series_path.exists():
+        latencies = pd.read_csv(lat_series_path).squeeze()
+        if not isinstance(latencies, pd.Series):
+            latencies = pd.Series(latencies)
+        latencies = latencies.dropna()
+        plot_latency_hist(latencies, artifacts_dir / "latency_hist.png")
+    else:
+        print("latency_series.csv not found; skipping latency histogram.")
+
+    percentiles = parse_percentiles(summary)
+    if percentiles:
+        plot_latency_percentiles(percentiles, artifacts_dir / "percentiles.png")
+    else:
+        print("No percentile information available to plot.")
+
+    per_layer_csv = artifacts_dir / "per_layer_times.csv"
+    per_layer_df = None
+    if per_layer_csv.exists():
+        per_layer_df = pd.read_csv(per_layer_csv)
+        per_layer_df = per_layer_df.sort_values("avg_time_ms", ascending=False)
+        # ensure plot exists even if parse_trtexec_profile was not executed with plotting
+        maybe_plot_per_layer(per_layer_df, artifacts_dir / "per_layer_time.png", args.topk)
+    else:
+        print("per_layer_times.csv not found; skipping per-layer plot.")
+
+    compare_path = artifacts_dir / "output_diff.json"
+    compare_summary = load_json(compare_path) if compare_path.exists() else None
+
+    report_data = {
+        "summary": summary,
+        "top_layers": per_layer_df.head(10).to_dict(orient="records") if per_layer_df is not None else [],
+    }
+    if compare_summary:
+        report_data["output_comparison"] = compare_summary
+
+    report_json = artifacts_dir / "report.json"
+    with report_json.open("w", encoding="utf-8") as f:
+        json.dump(report_data, f, indent=2)
+    print(f"Wrote {report_json}")
+
+    report_text = build_report_text(summary, per_layer_df)
+    report_md = artifacts_dir / "report.md"
+    report_md.write_text(report_text + "\n", encoding="utf-8")
+    print(f"Wrote {report_md}")
+
+
+if __name__ == "__main__":
+    main()
