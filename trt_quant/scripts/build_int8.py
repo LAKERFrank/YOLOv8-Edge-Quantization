@@ -211,7 +211,14 @@ def build_engine(args: argparse.Namespace) -> None:
                 trt.OnnxParser(network, TRT_LOGGER) as parser, \
                 builder.create_builder_config() as config:
 
-            builder.max_batch_size = 1  # not used in explicit batch but set anyway
+            if hasattr(builder, "max_batch_size"):
+                # Older TensorRT versions expect this property even in explicit batch mode,
+                # whereas newer releases (TensorRT 10+) removed it entirely.
+                # Guard the assignment so both APIs are supported.
+                try:
+                    builder.max_batch_size = 1  # type: ignore[assignment]
+                except AttributeError:
+                    pass
             config.max_workspace_size = args.workspace * (1 << 20)
 
             with open(args.onnx, "rb") as f:
