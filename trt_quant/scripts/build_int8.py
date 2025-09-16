@@ -91,11 +91,12 @@ class ImageStream:
         return preprocess_to_nchw(img, imgsz=self.imgsz)
 
 
-class BaseCalibrator:
+class _CalibrationState:
+    """Reusable logic shared by TensorRT calibrator implementations."""
+
     def __init__(self, stream: ImageStream, cache_path: str):
         self.stream = stream
         self.cache_path = cache_path
-        # Allocate one device buffer for a single batch
         sample = self.stream.get_batch()
         if sample is None:
             raise RuntimeError("Calibration stream is empty")
@@ -105,37 +106,62 @@ class BaseCalibrator:
         self.host_dtype = sample.dtype
 
     def get_batch_size(self) -> int:
-        return self.host_shape[0]  # 1
+        return int(self.host_shape[0])
 
-    def get_batch(self, names: Iterable[str]) -> Optional[List[int]]:  # type: ignore[override]
+    def next_batch(self) -> Optional[List[int]]:
         batch = self.stream.get_batch()
         if batch is None:
             return None
-        assert batch.shape == self.host_shape and batch.dtype == self.host_dtype
+        if batch.shape != self.host_shape or batch.dtype != self.host_dtype:
+            raise ValueError("Calibration batch shape/dtype changed between iterations")
         cuda.memcpy_htod(self.device_input, batch)
         return [int(self.device_input)]
 
-    def read_calibration_cache(self) -> Optional[bytes]:
+    def read_cache(self) -> Optional[bytes]:
         if os.path.exists(self.cache_path):
             with open(self.cache_path, "rb") as f:
                 return f.read()
         return None
 
-    def write_calibration_cache(self, cache: bytes) -> None:
+    def write_cache(self, cache: bytes) -> None:
         with open(self.cache_path, "wb") as f:
             f.write(cache)
 
 
-class MinMaxCalibrator(trt.IInt8MinMaxCalibrator, BaseCalibrator):
+class MinMaxCalibrator(trt.IInt8MinMaxCalibrator):
     def __init__(self, stream: ImageStream, cache_path: str):
-        trt.IInt8MinMaxCalibrator.__init__(self)
-        BaseCalibrator.__init__(self, stream, cache_path)
+        super().__init__()
+        self._state = _CalibrationState(stream, cache_path)
+
+    def get_batch_size(self) -> int:  # type: ignore[override]
+        return self._state.get_batch_size()
+
+    def get_batch(self, names: Iterable[str]) -> Optional[List[int]]:  # type: ignore[override]
+        return self._state.next_batch()
+
+    def read_calibration_cache(self) -> Optional[bytes]:  # type: ignore[override]
+        return self._state.read_cache()
+
+    def write_calibration_cache(self, cache: bytes) -> None:  # type: ignore[override]
+        self._state.write_cache(cache)
 
 
-class EntropyCalibrator(trt.IInt8EntropyCalibrator2, BaseCalibrator):
+class EntropyCalibrator(trt.IInt8EntropyCalibrator2):
     def __init__(self, stream: ImageStream, cache_path: str):
-        trt.IInt8EntropyCalibrator2.__init__(self)
-        BaseCalibrator.__init__(self, stream, cache_path)
+        super().__init__()
+        self._state = _CalibrationState(stream, cache_path)
+
+    def get_batch_size(self) -> int:  # type: ignore[override]
+        return self._state.get_batch_size()
+
+    def get_batch(self, names: Iterable[str]) -> Optional[List[int]]:  # type: ignore[override]
+        return self._state.next_batch()
+
+    def read_calibration_cache(self) -> Optional[bytes]:  # type: ignore[override]
+        return self._state.read_cache()
+
+    def write_calibration_cache(self, cache: bytes) -> None:  # type: ignore[override]
+        self._state.write_cache(cache)
 
 
 # ---------- Build engine ----------
