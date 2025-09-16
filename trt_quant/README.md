@@ -36,7 +36,7 @@ channels: 1
 
 Export flow: `.pt -> .onnx -> trtexec build`. ONNX and engine files are saved to `--outdir`. Requires TensorRT 10.7 (container 24.12) with `trtexec` available.
 
-### INT8
+### INT8（Ultralytics export path）
 ```bash
 python trt_quant/scripts/export_trt.py \
   --model /path/to/your_pose_1ch.pt \
@@ -57,6 +57,41 @@ python trt_quant/scripts/export_trt.py \
 ```
 
 Shape flags are only required when `--dynamic` is set; omit them for static models.
+
+### Alternative: build INT8 from ONNX with custom calibration
+如果你已經有 1-channel 的 ONNX（例如透過 `export_trt.py --onnx-only` 產生），可以使用
+`trt_quant/scripts/build_int8.py` 直接建出兩顆 INT8 engine，並對關鍵層啟用 FP16 fallback。
+
+校正資料夾需放入「偏黑背景 + 後場遠距人物」的代表性影像（建議 1000–3000 張），下面以
+`trt_quant/calib/dark_small/` 為例：
+
+```bash
+# MinMax 版本（預設）
+python trt_quant/scripts/build_int8.py \
+  --onnx trt_quant/engine/pose_1ch.onnx \
+  --out trt_quant/engine/pose_int8_minmax.engine \
+  --calib-dir trt_quant/calib/dark_small \
+  --imgsz 640 \
+  --fp16-fallback "model.0,detect"
+
+# Entropy 版本（A/B 比較）
+python trt_quant/scripts/build_int8.py \
+  --onnx trt_quant/engine/pose_1ch.onnx \
+  --out trt_quant/engine/pose_int8_entropy.engine \
+  --calib-dir trt_quant/calib/dark_small \
+  --imgsz 640 \
+  --calibrator entropy \
+  --fp16-fallback "model.0,detect"
+```
+
+常用參數：
+
+- `--calib-dir`：校正資料夾，僅讀取 jpg/png 影像，會自動轉灰階 + letterbox 為 1×1×H×W。
+- `--fp16-fallback`：以逗號分隔的層名稱關鍵字，預設固定第一層（`model.0`）與 head（`detect`）
+  使用 FP16，以穩定暗場輸出。若要全部 INT8，可設為空字串。
+- `--enable-fp16 / --disable-fp16`：控制是否允許 TensorRT 使用 FP16 kernel。
+- 腳本會列印 network layer 清單，若需要微調 fallback 層，可先查看名稱再調整關鍵字。
+- 校正 cache 會以 `*.calib.cache` 存放在 engine 同路徑，下次重複使用會加速 build。
 
 ## 4) Verify engine
 ```bash
