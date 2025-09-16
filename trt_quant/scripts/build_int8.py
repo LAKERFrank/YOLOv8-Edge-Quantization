@@ -183,6 +183,21 @@ def set_fp16_fallback(network: trt.INetworkDefinition, keywords: str) -> List[st
     return pinned
 
 
+def _as_bytes(serialized_engine) -> bytes:
+    """Best-effort conversion of TensorRT serialized outputs to raw bytes."""
+    if isinstance(serialized_engine, (bytes, bytearray)):
+        return bytes(serialized_engine)
+    if hasattr(serialized_engine, "tobytes"):
+        return serialized_engine.tobytes()
+    try:
+        return bytes(memoryview(serialized_engine))
+    except TypeError:
+        pass
+    if hasattr(serialized_engine, "buffer"):
+        return bytes(serialized_engine.buffer)
+    raise TypeError("Unable to convert serialized engine to bytes")
+
+
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser()
     ap.add_argument("--onnx", required=True, help="path to 1ch ONNX")
@@ -272,13 +287,26 @@ def build_engine(args: argparse.Namespace) -> None:
                 layer = network.get_layer(i)
                 print(f"{i:03d} | {layer.name} | {layer.type}")
 
-            engine = builder.build_engine(network, config)
-            if engine is None:
-                raise RuntimeError("build_engine returned None")
+            serialized = None
+            if hasattr(builder, "build_serialized_network"):
+                # TensorRT 10+ returns an IHostMemory serialized engine directly.
+                serialized = builder.build_serialized_network(network, config)
+                if serialized is None:
+                    raise RuntimeError("build_serialized_network returned None")
+            elif hasattr(builder, "build_engine"):
+                # Older TensorRT exposes build_engine which returns an ICudaEngine.
+                engine = builder.build_engine(network, config)
+                if engine is None:
+                    raise RuntimeError("build_engine returned None")
+                serialized = engine.serialize()
+            else:
+                raise AttributeError("Unsupported TensorRT builder API: missing build methods")
+
+            engine_bytes = _as_bytes(serialized)
 
             os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
             with open(args.out, "wb") as f:
-                f.write(engine.serialize())
+                f.write(engine_bytes)
             print(f"Saved engine to: {args.out}")
 
 
