@@ -141,6 +141,29 @@ class EntropyCalibrator(trt.IInt8EntropyCalibrator2, BaseCalibrator):
 # ---------- Build engine ----------
 
 
+def set_workspace_size(config: trt.IBuilderConfig, workspace_mib: int) -> None:
+    """Set builder workspace in MiB, handling both legacy and TensorRT 10+ APIs."""
+    size_bytes = int(workspace_mib) * (1 << 20)
+
+    # TensorRT < 10 uses the max_workspace_size attribute.
+    if hasattr(config, "max_workspace_size"):
+        try:
+            config.max_workspace_size = size_bytes  # type: ignore[attr-defined]
+            return
+        except AttributeError:
+            # Attribute was removed despite being present via getattr, fall back below.
+            pass
+
+    # TensorRT 10+ exposes set_memory_pool_limit with MemoryPoolType.WORKSPACE.
+    if hasattr(config, "set_memory_pool_limit") and hasattr(trt, "MemoryPoolType"):
+        config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, size_bytes)
+        return
+
+    raise AttributeError(
+        "Unable to set builder workspace size: unsupported TensorRT API surface."
+    )
+
+
 def set_fp16_fallback(network: trt.INetworkDefinition, keywords: str) -> List[str]:
     """Set precision of layers containing any keyword to FP16 (else INT8 by config)."""
     pinned: List[str] = []
@@ -219,7 +242,8 @@ def build_engine(args: argparse.Namespace) -> None:
                     builder.max_batch_size = 1  # type: ignore[assignment]
                 except AttributeError:
                     pass
-            config.max_workspace_size = args.workspace * (1 << 20)
+
+            set_workspace_size(config, args.workspace)
 
             with open(args.onnx, "rb") as f:
                 onnx_bytes = f.read()
