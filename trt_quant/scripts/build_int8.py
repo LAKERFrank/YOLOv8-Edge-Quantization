@@ -164,6 +164,82 @@ def set_workspace_size(config: trt.IBuilderConfig, workspace_mib: int) -> None:
     )
 
 
+def _static_shape_from_dims(dims: trt.Dims, imgsz: int) -> tuple[int, ...]:
+    """Replace dynamic dims with concrete values for the calibration profile."""
+    resolved: list[int] = []
+    for i, dim in enumerate(dims):
+        if dim is None:
+            val = 1 if i == 0 else imgsz
+        elif isinstance(dim, int) and dim > 0:
+            val = dim
+        else:
+            # TensorRT uses 0 or -1 to denote dynamic/unknown dims.
+            if i == 0:
+                val = 1  # batch
+            elif i == 1:
+                val = 1  # channel (1-ch model)
+            else:
+                val = imgsz
+        resolved.append(int(val))
+    return tuple(resolved)
+
+
+def _shape_tensor_default(dims: trt.Dims, imgsz: int) -> np.ndarray:
+    """Generate an INT32 vector for shape tensor bindings."""
+    if len(dims) == 0:
+        return np.empty((0,), dtype=np.int32)
+    values = []
+    for dim in dims:
+        if isinstance(dim, int) and dim > 0:
+            values.append(dim)
+        else:
+            values.append(imgsz)
+    return np.asarray(values, dtype=np.int32)
+
+
+def add_optimization_profile(
+    builder: trt.Builder,
+    config: trt.IBuilderConfig,
+    network: trt.INetworkDefinition,
+    imgsz: int,
+) -> None:
+    """Create a static optimization profile when the network exposes dynamic inputs."""
+
+    if not hasattr(config, "add_optimization_profile"):
+        return
+
+    profile = builder.create_optimization_profile()
+    needs_profile = False
+    static_bindings: list[tuple[str, tuple[int, ...]]] = []
+    shape_bindings: list[tuple[str, np.ndarray]] = []
+
+    for i in range(network.num_inputs):
+        tensor = network.get_input(i)
+
+        # Shape-tensor bindings must be configured separately.
+        if getattr(tensor, "is_shape_tensor", False):
+            default = _shape_tensor_default(tensor.shape, imgsz)
+            profile.set_shape_input(tensor.name, default, default, default)
+            shape_bindings.append((tensor.name, default))
+            needs_profile = True
+            continue
+
+        dims = tensor.shape
+        if any((not isinstance(d, int)) or d <= 0 for d in dims):
+            static_dims = _static_shape_from_dims(dims, imgsz)
+            profile.set_shape(tensor.name, static_dims, static_dims, static_dims)
+            static_bindings.append((tensor.name, static_dims))
+            needs_profile = True
+
+    if needs_profile:
+        config.add_optimization_profile(profile)
+        print("Added optimization profile bindings:")
+        for name, dims in static_bindings:
+            print(f"  - {name}: {dims}")
+        for name, values in shape_bindings:
+            print(f"  - {name} (shape tensor): {values.tolist()}")
+
+
 def set_fp16_fallback(network: trt.INetworkDefinition, keywords: str) -> List[str]:
     """Set precision of layers containing any keyword to FP16 (else INT8 by config)."""
     pinned: List[str] = []
@@ -266,6 +342,8 @@ def build_engine(args: argparse.Namespace) -> None:
                 for i in range(parser.num_errors):
                     print(parser.get_error(i))
                 raise RuntimeError("ONNX parse failed")
+
+            add_optimization_profile(builder, config, network, args.imgsz)
 
             # INT8 + optional FP16
             config.set_flag(trt.BuilderFlag.INT8)
