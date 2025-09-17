@@ -128,7 +128,9 @@ def plot_topk(df: pd.DataFrame, out_png: Path, topk: int) -> None:
     top = df.head(topk)
     if top.empty:
         return
-    plt.figure(figsize=(12, max(4, top.shape[0] * 0.35)))
+    max_label_chars = max(len(str(name)) for name in top["name"])
+    width = min(40, max(16, max_label_chars * 0.22))
+    plt.figure(figsize=(width, max(4, top.shape[0] * 0.35)))
     y_labels = top["name"].astype(str)[::-1]
     times = top["avg_time_ms"][::-1]
     plt.barh(y_labels, times)
