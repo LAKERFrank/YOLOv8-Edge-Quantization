@@ -287,20 +287,60 @@ class EngineIOHelper:
         profile_index: int,
         stream_handle: Optional[int] = None,
     ) -> None:
-        if getattr(self.engine, "num_optimization_profiles", 0) <= 0:
+        num_profiles_attr = getattr(self.engine, "num_optimization_profiles", 0)
+        if callable(num_profiles_attr):
+            try:
+                num_profiles = int(num_profiles_attr())
+            except TypeError:
+                num_profiles = int(num_profiles_attr)
+        else:
+            num_profiles = int(num_profiles_attr)
+        if num_profiles <= 0:
             return
-        if stream_handle is not None and hasattr(context, "set_optimization_profile_async"):
-            context.set_optimization_profile_async(profile_index, stream_handle)
+        if not 0 <= profile_index < num_profiles:
+            raise ValueError(
+                f"Profile index {profile_index} out of range for engine with {num_profiles} profiles"
+            )
+
+        set_async = getattr(context, "set_optimization_profile_async", None)
+        if set_async is not None:
+            temp_stream = None
+            handle = stream_handle
+            if handle is None:
+                temp_stream = cuda.Stream()
+                handle = temp_stream.handle
+            try:
+                set_async(profile_index, handle)
+                if temp_stream is not None:
+                    temp_stream.synchronize()
+            finally:
+                if temp_stream is not None:
+                    del temp_stream
             return
-        try:
-            context.set_optimization_profile(profile_index)
+
+        set_sync = getattr(context, "set_optimization_profile", None)
+        if set_sync is not None:
+            set_sync(profile_index)
             return
-        except AttributeError:
-            pass
-        try:
-            context.active_optimization_profile = profile_index
-        except AttributeError:
-            raise RuntimeError("Unable to select optimization profile on execution context")
+
+        current = getattr(context, "active_optimization_profile", None)
+        if current is not None:
+            try:
+                if callable(current):
+                    current = current()
+            except TypeError:
+                pass
+            try:
+                if int(current) == int(profile_index):
+                    return
+            except (TypeError, ValueError):
+                pass
+
+        if profile_index == 0:
+            # Many runtimes default to profile 0 and expose only a read-only attribute.
+            return
+
+        raise RuntimeError("Unable to select optimization profile on execution context")
 
     @property
     def requires_tensor_io(self) -> bool:
@@ -384,9 +424,20 @@ def resolve_input_shapes(
     try:
         helper.set_optimization_profile(context, profile_index)
     except RuntimeError:
-        # Fall back to legacy attribute for older runtimes.
-        if hasattr(context, "active_optimization_profile"):
-            context.active_optimization_profile = profile_index
+        current = getattr(context, "active_optimization_profile", None)
+        if callable(current):  # pragma: no cover - defensive
+            try:
+                current = current()
+            except TypeError:
+                current = None
+        matches = False
+        if current is not None:
+            try:
+                matches = int(current) == int(profile_index)
+            except (TypeError, ValueError):  # pragma: no cover - defensive
+                matches = False
+        if not matches and profile_index != 0:
+            raise
     shapes: Dict[str, Tuple[int, ...]] = {}
     implicit = engine.has_implicit_batch_dimension
     for name in helper.input_names:
@@ -491,8 +542,20 @@ class TRTEngineRunner:
                 self.context, profile_index, self.stream.handle
             )
         except RuntimeError:
-            if hasattr(self.context, "active_optimization_profile"):
-                self.context.active_optimization_profile = profile_index
+            current = getattr(self.context, "active_optimization_profile", None)
+            if callable(current):  # pragma: no cover - defensive
+                try:
+                    current = current()
+                except TypeError:
+                    current = None
+            matches = False
+            if current is not None:
+                try:
+                    matches = int(current) == int(profile_index)
+                except (TypeError, ValueError):  # pragma: no cover - defensive
+                    matches = False
+            if not matches and profile_index != 0:
+                raise
         self.use_tensor_io = self.helper.requires_tensor_io
         if not self.use_tensor_io and not hasattr(self.context, "execute_async_v2"):
             self.use_tensor_io = hasattr(self.context, "set_tensor_address")
