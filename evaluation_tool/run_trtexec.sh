@@ -172,9 +172,14 @@ fi
   echo
 } | tee "$LOG_FILE"
 
-if ! "${CMD[@]}" &>>"$LOG_FILE"; then
-  echo "[run_trtexec] trtexec execution failed. See $LOG_FILE for details." >&2
-  exit 3
+if "${CMD[@]}" &>>"$LOG_FILE"; then
+  echo "[run_trtexec] trtexec finished successfully. Artifacts stored in $OUTDIR"
+else
+  status=$?
+  echo "[run_trtexec] trtexec execution failed with exit code $status. See $LOG_FILE for details." >&2
+  if [[ -s "$LOG_FILE" ]]; then
+    echo "[run_trtexec] Last 20 lines from trtexec log:" >&2
+    tail -n 20 "$LOG_FILE" >&2 || true
+  fi
+  exit "$status"
 fi
-
-echo "[run_trtexec] trtexec finished successfully. Artifacts stored in $OUTDIR"

@@ -85,7 +85,9 @@ This folder contains a small toolkit for running reproducible TensorRT engine be
 ### `run_trtexec.sh`
 - Accepts `--shape <tensor:dimx...>` to forward dynamic shape definitions to `trtexec`.
 - Use `--extra "--separateProfileRun --memPoolSize=workspace:4096"` or append arguments after `--` to pass additional flags directly.
-- Logs the exact command and all `trtexec` output to `<outdir>/trtexec_stdout.log`.
+- Logs the exact command and all `trtexec` output to `<outdir>/trtexec_stdout.log`. On failures it
+  exits with the original `trtexec` status code and prints the last 20 log lines to stderr for
+  quicker debugging.
 - Emits `<outdir>/engine_metadata.json` summarising the engine path, size, and modification timestamp. This metadata is automatically consumed by the parsing/report scripts.
 
 ### `parse_trtexec_times.py`
