@@ -33,6 +33,279 @@ class BindingInfo:
     is_input: bool
 
 
+class EngineIOHelper:
+    """Compatibility layer between legacy binding APIs and TensorRT 10 IO tensors."""
+
+    def __init__(self, engine: "trt.ICudaEngine") -> None:
+        self.engine = engine
+        self.tensor_io_mode = getattr(trt, "TensorIOMode", None)
+        self.execution_status = getattr(trt, "ExecutionStatus", None)
+        self.using_bindings = hasattr(engine, "num_bindings") and hasattr(
+            engine, "get_binding_name"
+        )
+        self.using_io_tensors = hasattr(engine, "num_io_tensors") and hasattr(
+            engine, "get_tensor_name"
+        )
+        if not (self.using_bindings or self.using_io_tensors):
+            raise RuntimeError(
+                "TensorRT engine exposes neither legacy binding APIs nor IO tensor APIs"
+            )
+        self._all_names = self._collect_names()
+        self._name_to_index = {name: idx for idx, name in enumerate(self._all_names)}
+
+    def _collect_names(self) -> List[str]:
+        names: List[str] = []
+        if self.using_bindings:
+            count = self._get_num_bindings_raw()
+            for idx in range(count):
+                names.append(self.engine.get_binding_name(idx))
+        else:
+            count = self._get_num_io_tensors_raw()
+            get_tensor_name = getattr(self.engine, "get_tensor_name")
+            for idx in range(count):
+                try:
+                    name = get_tensor_name(idx)
+                except TypeError:
+                    # Some TensorRT builds expect the tensor name instead of index; ignore.
+                    name = None
+                if not name:
+                    continue
+                names.append(name)
+        return names
+
+    def _get_num_bindings_raw(self) -> int:
+        attr = getattr(self.engine, "num_bindings", None)
+        if attr is None:
+            return 0
+        return int(attr() if callable(attr) else attr)
+
+    def _get_num_io_tensors_raw(self) -> int:
+        attr = getattr(self.engine, "num_io_tensors", None)
+        if attr is None:
+            return 0
+        return int(attr() if callable(attr) else attr)
+
+    @staticmethod
+    def _mode_matches(mode: object, target: str) -> bool:
+        if mode is None:
+            return False
+        try:
+            # Direct enum comparison when TensorIOMode is available.
+            enum_value = getattr(trt.TensorIOMode, target)
+        except AttributeError:
+            enum_value = None
+        if enum_value is not None:
+            try:
+                return mode == enum_value
+            except Exception:  # pragma: no cover - defensive against mismatched enums
+                pass
+        return target.lower() in str(mode).lower()
+
+    def _dims_to_tuple(self, dims: Any) -> Tuple[int, ...]:
+        if dims is None:
+            return ()
+        if isinstance(dims, tuple):
+            return tuple(int(d) for d in dims)
+        if isinstance(dims, list):
+            return tuple(int(d) for d in dims)
+        try:
+            return tuple(int(dims[i]) for i in range(len(dims)))
+        except Exception:  # pragma: no cover - fallback for unexpected containers
+            return tuple(int(v) for v in dims)
+
+    @property
+    def io_tensor_names(self) -> List[str]:
+        names: List[str] = []
+        for name in self._all_names:
+            if self.is_shape_tensor(name):
+                continue
+            if self.using_bindings:
+                names.append(name)
+            else:
+                if self.is_input(name) or self.is_output(name):
+                    names.append(name)
+        return names
+
+    @property
+    def input_names(self) -> List[str]:
+        return [name for name in self.io_tensor_names if self.is_input(name)]
+
+    @property
+    def output_names(self) -> List[str]:
+        return [name for name in self.io_tensor_names if self.is_output(name)]
+
+    def num_bindings(self) -> int:
+        if self.using_bindings:
+            return self._get_num_bindings_raw()
+        return len(self.io_tensor_names)
+
+    def get_binding_index(self, name: str) -> int:
+        if self.using_bindings and hasattr(self.engine, "get_binding_index"):
+            idx = self.engine.get_binding_index(name)
+            if idx != -1:
+                return idx
+        if hasattr(self.engine, "get_tensor_index"):
+            try:
+                idx = self.engine.get_tensor_index(name)
+                if idx != -1:
+                    return idx
+            except TypeError:
+                pass
+        return self._name_to_index.get(name, -1)
+
+    def is_input(self, name: str) -> bool:
+        if self.using_bindings and hasattr(self.engine, "binding_is_input"):
+            idx = self.get_binding_index(name)
+            if idx == -1:
+                return False
+            return bool(self.engine.binding_is_input(idx))
+        mode_fn = getattr(self.engine, "get_tensor_mode", None)
+        if mode_fn is None:
+            return False
+        mode = mode_fn(name)
+        return self._mode_matches(mode, "INPUT") or self._mode_matches(mode, "BIDIRECTIONAL")
+
+    def is_output(self, name: str) -> bool:
+        if self.using_bindings:
+            return not self.is_input(name)
+        mode_fn = getattr(self.engine, "get_tensor_mode", None)
+        if mode_fn is None:
+            return False
+        mode = mode_fn(name)
+        return self._mode_matches(mode, "OUTPUT") or self._mode_matches(mode, "BIDIRECTIONAL")
+
+    def is_shape_tensor(self, name: str) -> bool:
+        mode_fn = getattr(self.engine, "get_tensor_mode", None)
+        if mode_fn is None:
+            return False
+        mode = mode_fn(name)
+        return self._mode_matches(mode, "SHAPE")
+
+    def get_dtype(self, name: str) -> np.dtype:
+        if self.using_bindings and hasattr(self.engine, "get_binding_index"):
+            idx = self.engine.get_binding_index(name)
+            if idx != -1:
+                return np.dtype(trt.nptype(self.engine.get_binding_dtype(idx)))
+        if hasattr(self.engine, "get_tensor_dtype"):
+            return np.dtype(trt.nptype(self.engine.get_tensor_dtype(name)))
+        raise RuntimeError(f"Unable to determine dtype for binding '{name}'")
+
+    def get_engine_shape(self, name: str) -> Tuple[int, ...]:
+        if self.using_bindings and hasattr(self.engine, "get_binding_index"):
+            idx = self.engine.get_binding_index(name)
+            if idx != -1:
+                return self._dims_to_tuple(self.engine.get_binding_shape(idx))
+        if hasattr(self.engine, "get_tensor_shape"):
+            return self._dims_to_tuple(self.engine.get_tensor_shape(name))
+        return ()
+
+    def get_context_shape(self, context: "trt.IExecutionContext", name: str) -> Tuple[int, ...]:
+        if self.using_bindings and hasattr(context, "get_binding_shape"):
+            idx = self.get_binding_index(name)
+            if idx != -1:
+                return self._dims_to_tuple(context.get_binding_shape(idx))
+        if hasattr(context, "get_tensor_shape"):
+            return self._dims_to_tuple(context.get_tensor_shape(name))
+        return ()
+
+    def set_context_shape(
+        self, context: "trt.IExecutionContext", name: str, shape: Tuple[int, ...]
+    ) -> None:
+        if self.using_bindings and hasattr(context, "set_binding_shape"):
+            idx = self.get_binding_index(name)
+            if idx == -1:
+                raise RuntimeError(f"Unknown binding '{name}'")
+            context.set_binding_shape(idx, tuple(int(d) for d in shape))
+            return
+        setter = getattr(context, "set_input_shape", None)
+        if setter is None:
+            setter = getattr(context, "set_tensor_shape", None)
+        if setter is None:
+            raise AttributeError(
+                "Execution context does not provide set_input_shape/set_tensor_shape APIs"
+            )
+        try:
+            setter(name, tuple(int(d) for d in shape))
+        except TypeError:
+            idx = self.get_binding_index(name)
+            setter(idx, tuple(int(d) for d in shape))
+
+    def all_input_shapes_specified(self, context: "trt.IExecutionContext") -> bool:
+        attr = None
+        if self.using_bindings and hasattr(context, "all_binding_shapes_specified"):
+            attr = context.all_binding_shapes_specified
+        elif hasattr(context, "all_input_shapes_specified"):
+            attr = context.all_input_shapes_specified
+        if attr is None:
+            return True
+        if callable(attr):
+            attr = attr()
+        return bool(attr)
+
+    def get_profile_opt_shape(self, name: str, profile_index: int) -> Optional[Tuple[int, ...]]:
+        if hasattr(self.engine, "get_profile_shape"):
+            idx = self.get_binding_index(name)
+            if idx != -1:
+                try:
+                    shapes = self.engine.get_profile_shape(profile_index, idx)
+                except TypeError:
+                    shapes = self.engine.get_profile_shape(idx)
+                if shapes:
+                    try:
+                        return self._dims_to_tuple(shapes[1])
+                    except Exception:
+                        pass
+        if hasattr(self.engine, "get_tensor_profile_shape"):
+            try:
+                shapes = self.engine.get_tensor_profile_shape(name, profile_index)
+            except TypeError:
+                shapes = self.engine.get_tensor_profile_shape(name)
+            if shapes:
+                try:
+                    return self._dims_to_tuple(shapes[1])
+                except Exception:
+                    pass
+        return None
+
+    def set_tensor_address(
+        self, context: "trt.IExecutionContext", name: str, device_ptr: int
+    ) -> None:
+        setter = getattr(context, "set_tensor_address", None)
+        if setter is None:
+            raise AttributeError(
+                "Execution context does not provide set_tensor_address required for IO tensors"
+            )
+        try:
+            setter(name, device_ptr)
+        except TypeError:
+            idx = self.get_binding_index(name)
+            setter(idx, device_ptr)
+
+    def set_optimization_profile(
+        self,
+        context: "trt.IExecutionContext",
+        profile_index: int,
+        stream_handle: Optional[int] = None,
+    ) -> None:
+        if getattr(self.engine, "num_optimization_profiles", 0) <= 0:
+            return
+        if stream_handle is not None and hasattr(context, "set_optimization_profile_async"):
+            context.set_optimization_profile_async(profile_index, stream_handle)
+            return
+        try:
+            context.set_optimization_profile(profile_index)
+            return
+        except AttributeError:
+            pass
+        try:
+            context.active_optimization_profile = profile_index
+        except AttributeError:
+            raise RuntimeError("Unable to select optimization profile on execution context")
+
+    @property
+    def requires_tensor_io(self) -> bool:
+        return not self.using_bindings
+
 def load_engine(engine_path: Path) -> trt.ICudaEngine:
     logger = trt.Logger(trt.Logger.WARNING)
     with open(engine_path, "rb") as f, trt.Runtime(logger) as runtime:
@@ -58,25 +331,21 @@ def parse_shape_string(shape_str: str) -> Tuple[str, Tuple[int, ...]]:
 
 
 def build_binding_info(engine: trt.ICudaEngine) -> Dict[str, BindingInfo]:
+    helper = EngineIOHelper(engine)
     info: Dict[str, BindingInfo] = {}
-    for idx in range(engine.num_bindings):
-        name = engine.get_binding_name(idx)
-        dtype = np.dtype(trt.nptype(engine.get_binding_dtype(idx)))
+    for name in helper.io_tensor_names:
         info[name] = BindingInfo(
             name=name,
-            index=idx,
-            dtype=dtype,
-            is_input=engine.binding_is_input(idx),
+            index=helper.get_binding_index(name),
+            dtype=helper.get_dtype(name),
+            is_input=helper.is_input(name),
         )
     return info
 
 
 def get_binding_names(engine: trt.ICudaEngine, *, inputs: bool) -> List[str]:
-    names: List[str] = []
-    for idx in range(engine.num_bindings):
-        if engine.binding_is_input(idx) == inputs:
-            names.append(engine.get_binding_name(idx))
-    return names
+    helper = EngineIOHelper(engine)
+    return helper.input_names if inputs else helper.output_names
 
 
 def ensure_engines_compatible(
@@ -110,38 +379,37 @@ def resolve_input_shapes(
     batch_size: int,
     profile_index: int,
 ) -> Dict[str, Tuple[int, ...]]:
+    helper = EngineIOHelper(engine)
     context = engine.create_execution_context()
-    if engine.num_optimization_profiles > 0:
-        try:
-            context.set_optimization_profile(profile_index)
-        except AttributeError:
+    try:
+        helper.set_optimization_profile(context, profile_index)
+    except RuntimeError:
+        # Fall back to legacy attribute for older runtimes.
+        if hasattr(context, "active_optimization_profile"):
             context.active_optimization_profile = profile_index
     shapes: Dict[str, Tuple[int, ...]] = {}
-    for idx in range(engine.num_bindings):
-        if not engine.binding_is_input(idx):
-            continue
-        name = engine.get_binding_name(idx)
+    implicit = engine.has_implicit_batch_dimension
+    for name in helper.input_names:
         if name in provided:
             shapes[name] = tuple(provided[name])
             continue
-        dims = tuple(context.get_binding_shape(idx))
-        if engine.has_implicit_batch_dimension:
-            dims = (batch_size, *tuple(int(d) for d in engine.get_binding_shape(idx)))
-        if -1 in dims:
-            opt_shape: Optional[Tuple[int, ...]] = None
-            if hasattr(engine, "get_profile_shape"):
-                try:
-                    profile_shapes = engine.get_profile_shape(profile_index, idx)
-                except TypeError:
-                    profile_shapes = None
-                if profile_shapes:
-                    # profile_shapes is (min, opt, max)
-                    try:
-                        opt_shape = tuple(int(d) for d in profile_shapes[1])
-                    except TypeError:
-                        opt_shape = None
+
+        if implicit:
+            base_dims = helper.get_engine_shape(name)
+            dims: Tuple[int, ...] = (batch_size, *tuple(int(d) for d in base_dims))
+        else:
+            ctx_dims = helper.get_context_shape(context, name)
+            if not ctx_dims:
+                ctx_dims = helper.get_engine_shape(name)
+            dims = tuple(int(d) for d in ctx_dims)
+
+        if any(dim == -1 for dim in dims):
+            opt_shape = helper.get_profile_opt_shape(name, profile_index)
             if opt_shape is not None and -1 not in opt_shape:
-                dims = opt_shape
+                if implicit:
+                    dims = (batch_size, *tuple(int(d) for d in opt_shape))
+                else:
+                    dims = tuple(int(d) for d in opt_shape)
             else:
                 raise ValueError(
                     f"Input '{name}' has dynamic dimensions. Provide --input-shape {name}:dim,..."
@@ -215,35 +483,41 @@ class TRTEngineRunner:
         self.engine = engine
         self.batch_size = batch_size
         self.implicit_batch = engine.has_implicit_batch_dimension
-        self.context = engine.create_execution_context()
-        if engine.num_optimization_profiles > 0:
-            try:
-                self.context.set_optimization_profile(profile_index)
-            except AttributeError:
-                self.context.active_optimization_profile = profile_index
+        self.helper = EngineIOHelper(engine)
         self.stream = cuda.Stream()
+        self.context = engine.create_execution_context()
+        try:
+            self.helper.set_optimization_profile(
+                self.context, profile_index, self.stream.handle
+            )
+        except RuntimeError:
+            if hasattr(self.context, "active_optimization_profile"):
+                self.context.active_optimization_profile = profile_index
+        self.use_tensor_io = self.helper.requires_tensor_io
+        if not self.use_tensor_io and not hasattr(self.context, "execute_async_v2"):
+            self.use_tensor_io = hasattr(self.context, "set_tensor_address")
 
     def infer(self, inputs: Mapping[str, np.ndarray]) -> Dict[str, np.ndarray]:
-        bindings: List[int] = [0] * self.engine.num_bindings
+        helper = self.helper
         device_allocations: List[cuda.DeviceAllocation] = []
         host_outputs: Dict[str, np.ndarray] = {}
         output_allocations: Dict[str, cuda.DeviceAllocation] = {}
-
         prepared_inputs: Dict[str, np.ndarray] = {}
-        for idx in range(self.engine.num_bindings):
-            if not self.engine.binding_is_input(idx):
-                continue
-            name = self.engine.get_binding_name(idx)
+        bindings: Optional[List[int]] = None
+        if not self.use_tensor_io:
+            bindings = [0] * helper.num_bindings()
+
+        for name in helper.input_names:
             if name not in inputs:
                 raise KeyError(f"Missing input '{name}' for inference")
             arr = np.asarray(inputs[name])
-            dtype = np.dtype(trt.nptype(self.engine.get_binding_dtype(idx)))
+            dtype = helper.get_dtype(name)
             if arr.dtype != dtype:
                 arr = arr.astype(dtype)
             if not arr.flags.c_contiguous:
                 arr = np.ascontiguousarray(arr)
             if self.implicit_batch:
-                expected_dims = tuple(self.engine.get_binding_shape(idx))
+                expected_dims = helper.get_engine_shape(name)
                 expected_shape = (self.batch_size, *tuple(int(d) for d in expected_dims))
                 if tuple(arr.shape) != expected_shape:
                     raise ValueError(
@@ -251,64 +525,82 @@ class TRTEngineRunner:
                     )
             prepared_inputs[name] = arr
             if not self.implicit_batch:
-                self.context.set_binding_shape(idx, arr.shape)
+                helper.set_context_shape(self.context, name, tuple(int(d) for d in arr.shape))
 
-        if not self.implicit_batch and hasattr(self.context, "all_binding_shapes_specified"):
-            if not self.context.all_binding_shapes_specified:
-                missing = [
-                    self.engine.get_binding_name(i)
-                    for i in range(self.engine.num_bindings)
-                    if self.engine.binding_is_input(i)
-                    and -1 in tuple(self.context.get_binding_shape(i))
-                ]
-                raise RuntimeError(f"Binding shapes not fully specified: {missing}")
+        if not self.implicit_batch and not helper.all_input_shapes_specified(self.context):
+            missing = [
+                name
+                for name in helper.input_names
+                if any(dim == -1 for dim in helper.get_context_shape(self.context, name))
+            ]
+            raise RuntimeError(f"Binding shapes not fully specified: {missing}")
 
         # Allocate buffers and copy inputs
-        for idx in range(self.engine.num_bindings):
-            dtype = np.dtype(trt.nptype(self.engine.get_binding_dtype(idx)))
-            if self.engine.binding_is_input(idx):
-                name = self.engine.get_binding_name(idx)
-                arr = prepared_inputs[name]
-                device_mem = cuda.mem_alloc(arr.nbytes)
-                device_allocations.append(device_mem)
-                cuda.memcpy_htod_async(device_mem, arr, self.stream)
-                bindings[idx] = int(device_mem)
+        for name in helper.input_names:
+            arr = prepared_inputs[name]
+            device_mem = cuda.mem_alloc(arr.nbytes)
+            device_allocations.append(device_mem)
+            cuda.memcpy_htod_async(device_mem, arr, self.stream)
+            if self.use_tensor_io:
+                helper.set_tensor_address(self.context, name, int(device_mem))
             else:
-                if self.implicit_batch:
-                    dims = tuple(self.engine.get_binding_shape(idx))
-                    out_shape = (self.batch_size, *tuple(int(d) for d in dims))
-                else:
-                    out_shape = tuple(self.context.get_binding_shape(idx))
-                if -1 in out_shape:
-                    raise RuntimeError(
-                        f"Output binding '{self.engine.get_binding_name(idx)}' has unresolved shape {out_shape}"
-                    )
-                host_array = np.empty(out_shape, dtype=dtype)
-                device_mem = cuda.mem_alloc(host_array.nbytes)
-                device_allocations.append(device_mem)
-                bindings[idx] = int(device_mem)
-                name = self.engine.get_binding_name(idx)
-                host_outputs[name] = host_array
-                output_allocations[name] = device_mem
+                assert bindings is not None
+                bindings[helper.get_binding_index(name)] = int(device_mem)
+
+        for name in helper.output_names:
+            dtype = helper.get_dtype(name)
+            if self.implicit_batch:
+                dims = helper.get_engine_shape(name)
+                out_shape = (self.batch_size, *tuple(int(d) for d in dims))
+            else:
+                out_shape = helper.get_context_shape(self.context, name)
+            if not out_shape or any(dim == -1 for dim in out_shape):
+                raise RuntimeError(
+                    f"Output binding '{name}' has unresolved shape {out_shape}"
+                )
+            host_array = np.empty(out_shape, dtype=dtype)
+            device_mem = cuda.mem_alloc(host_array.nbytes)
+            device_allocations.append(device_mem)
+            host_outputs[name] = host_array
+            output_allocations[name] = device_mem
+            if self.use_tensor_io:
+                helper.set_tensor_address(self.context, name, int(device_mem))
+            else:
+                assert bindings is not None
+                bindings[helper.get_binding_index(name)] = int(device_mem)
 
         # Execute
-        if self.implicit_batch:
-            success = self.context.execute_async(
-                batch_size=self.batch_size,
-                bindings=bindings,
-                stream_handle=self.stream.handle,
-            )
-        else:
-            if hasattr(self.context, "execute_async_v2"):
-                success = self.context.execute_async_v2(
-                    bindings=bindings, stream_handle=self.stream.handle
+        if self.use_tensor_io:
+            execute_async_v3 = getattr(self.context, "execute_async_v3", None)
+            if execute_async_v3 is None:
+                raise RuntimeError(
+                    "TensorRT runtime does not expose execute_async_v3 required for IO tensors"
                 )
+            status = execute_async_v3(self.stream.handle)
+            status_enum = getattr(trt, "ExecutionStatus", None)
+            if status_enum is not None and hasattr(status_enum, "SUCCESS"):
+                success = status == status_enum.SUCCESS
             else:
+                success = bool(status)
+        else:
+            assert bindings is not None
+            if self.implicit_batch:
                 success = self.context.execute_async(
                     batch_size=self.batch_size,
                     bindings=bindings,
                     stream_handle=self.stream.handle,
                 )
+            else:
+                if hasattr(self.context, "execute_async_v2"):
+                    success = self.context.execute_async_v2(
+                        bindings=bindings, stream_handle=self.stream.handle
+                    )
+                else:
+                    success = self.context.execute_async(
+                        batch_size=self.batch_size,
+                        bindings=bindings,
+                        stream_handle=self.stream.handle,
+                    )
         if not success:
             raise RuntimeError("Engine execution failed")
 
