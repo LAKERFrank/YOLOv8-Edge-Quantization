@@ -163,27 +163,9 @@ def parse_percentiles(summary: Dict) -> List[Tuple[float, float]]:
             continue
         parsed.append((pct, float(value)))
     return parsed
-
-
-def maybe_plot_per_layer(top_layers: pd.DataFrame, out_png: Path, topk: int = 30) -> None:
-    if top_layers.empty:
-        return
-    subset = top_layers.head(topk)
-    plt.figure(figsize=(12, max(4, subset.shape[0] * 0.35)))
-    plt.barh(subset["name"].astype(str)[::-1], subset["avg_time_ms"][::-1])
-    plt.xlabel("Average time (ms)")
-    plt.ylabel("Layer")
-    plt.title(f"Top {subset.shape[0]} layers by average time")
-    plt.tight_layout()
-    plt.savefig(out_png)
-    plt.close()
-    print(f"Wrote {out_png}")
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate consolidated benchmark report")
     parser.add_argument("--artifacts", required=True, type=Path, help="Directory with trtexec outputs")
-    parser.add_argument("--topk", type=int, default=30, help="Number of layers to visualise in per-layer plot")
     args = parser.parse_args()
 
     artifacts_dir = args.artifacts
@@ -217,10 +199,8 @@ def main() -> None:
     if per_layer_csv.exists():
         per_layer_df = pd.read_csv(per_layer_csv)
         per_layer_df = per_layer_df.sort_values("avg_time_ms", ascending=False)
-        # ensure plot exists even if parse_trtexec_profile was not executed with plotting
-        maybe_plot_per_layer(per_layer_df, artifacts_dir / "per_layer_time.png", args.topk)
     else:
-        print("per_layer_times.csv not found; skipping per-layer plot.")
+        print("per_layer_times.csv not found; skipping per-layer summary.")
 
     compare_path = artifacts_dir / "output_diff.json"
     compare_summary = load_json(compare_path) if compare_path.exists() else None
