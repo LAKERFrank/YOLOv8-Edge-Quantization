@@ -38,7 +38,9 @@ This folder contains a small toolkit for running reproducible TensorRT engine be
      --useCudaGraph \
      --outdir artifacts/my_model
   ```
-  The script saves `times.json`, `profile.json`, `engine_metadata.json`, `run_config.json`, and a `trtexec_stdout.log` file into the specified `--outdir` (created automatically). `engine_metadata.json` records the absolute engine path, file size, and last modified timestamp for downstream reports, while `run_config.json` captures the run settings (batch size, iterations, warmup, CUDA Graph usage, and the resolved `trtexec` command).
+  The script saves `times.json`, `profile.json` (unless profiling is disabled), `engine_metadata.json`, `run_config.json`, and a `trtexec_stdout.log` file into the specified `--outdir` (created automatically). `engine_metadata.json` records the absolute engine path, file size, and last modified timestamp for downstream reports, while `run_config.json` captures the run settings (batch size, iterations, warmup, CUDA Graph usage, profiling flags, and the resolved `trtexec` command).
+
+  By default the wrapper requests per-layer profiling via `--dumpProfile` **and** automatically appends `--separateProfileRun` so that TensorRT collects profile data in a dedicated pass without suppressing the end-to-end timing statistics. Disable profiling entirely with `--disableProfile`, or keep the profiler but skip the extra pass with `--disableSeparateProfileRun` if you explicitly need the legacy behaviour.
 
   > **Note:** TensorRT executes the shapes embedded inside a serialized engine, so the batch size provided to the wrapper is stored for reporting but not forwarded to `trtexec`. If your workflow requires explicitly passing `--batch=<N>` to `trtexec`, forward it via `--extra "--batch=<N>"` or arguments after `--`.
 
@@ -86,7 +88,8 @@ This folder contains a small toolkit for running reproducible TensorRT engine be
 
 ### `run_trtexec.sh`
 - Accepts `--shape <tensor:dimx...>` to forward dynamic shape definitions to `trtexec`.
-- Use `--extra "--separateProfileRun --memPoolSize=workspace:4096"` or append arguments after `--` to pass additional flags directly.
+- Adds `--dumpProfile`, `--exportProfile`, and (by default) `--separateProfileRun` so `times.json` remains available even when profiling is enabled. Use `--disableProfile` to skip per-layer artefacts, or `--disableSeparateProfileRun` if you want to profile within the primary timing pass.
+- Use `--extra "--memPoolSize=workspace:4096"` or append arguments after `--` to pass additional flags directly.
 - Logs the exact command and all `trtexec` output to `<outdir>/trtexec_stdout.log`. On failures it
   exits with the original `trtexec` status code and prints the last 20 log lines to stderr for
   quicker debugging.

@@ -7,18 +7,22 @@ print_usage() {
 Usage: $0 --engine <path.engine> [options]
 
 Options:
-  --engine <file>        TensorRT engine file to benchmark (required)
-  --batch <N>            Batch size (default: 1)
-  --iters <N>            Number of benchmark iterations (default: 200)
-  --warmup <N>           Warmup iterations before measuring (default: 500)
-  --avgRuns <N>          Number of averages for latency reported by trtexec (default: 100)
-  --outdir <DIR>         Directory for artifacts (default: artifacts/<timestamp>)
-  --useCudaGraph         Enable CUDA graph capture during benchmarking
-  --shape <name:shape>   Dynamic shape specification passed to trtexec (can be repeated)
-  --fp16                 Enable FP16 mode when running trtexec
-  --int8                 Enable INT8 mode when running trtexec
-  --trtexec <path>       Path to trtexec binary (default: trtexec from PATH)
-  --extra "<args>"       Extra arguments passed directly to trtexec
+  --engine <file>             TensorRT engine file to benchmark (required)
+  --batch <N>                 Batch size (default: 1)
+  --iters <N>                 Number of benchmark iterations (default: 200)
+  --warmup <N>                Warmup iterations before measuring (default: 500)
+  --avgRuns <N>               Number of averages for latency reported by trtexec (default: 100)
+  --outdir <DIR>              Directory for artifacts (default: artifacts/<timestamp>)
+  --useCudaGraph              Enable CUDA graph capture during benchmarking
+  --shape <name:shape>        Dynamic shape specification passed to trtexec (can be repeated)
+  --fp16                      Enable FP16 mode when running trtexec
+  --int8                      Enable INT8 mode when running trtexec
+  --disableProfile            Skip per-layer profiling (omit --dumpProfile/--exportProfile)
+  --enableProfile             Re-enable per-layer profiling if disabled earlier
+  --disableSeparateProfileRun Do not add --separateProfileRun when profiling (default: enabled)
+  --enableSeparateProfileRun  Add --separateProfileRun alongside --dumpProfile (default)
+  --trtexec <path>            Path to trtexec binary (default: trtexec from PATH)
+  --extra "<args>"            Extra arguments passed directly to trtexec
   -h, --help             Show this message
 
 Any additional arguments after "--" are forwarded to trtexec verbatim.
@@ -30,6 +34,8 @@ BATCH_WAS_SET=0
 ITERS=200
 WARMUP=500
 USE_CUDA_GRAPH=0
+ENABLE_PROFILE=1
+SEPARATE_PROFILE_RUN=1
 OUTDIR="artifacts/$(date +%Y%m%d_%H%M%S)"
 ENGINE=""
 TRTEXEC="trtexec"
@@ -74,6 +80,22 @@ while [[ $# -gt 0 ]]; do
       ;;
     --fp16|--int8|--best)
       EXTRA_ARGS+=("$1")
+      shift 1
+      ;;
+    --disableProfile)
+      ENABLE_PROFILE=0
+      shift 1
+      ;;
+    --enableProfile)
+      ENABLE_PROFILE=1
+      shift 1
+      ;;
+    --disableSeparateProfileRun)
+      SEPARATE_PROFILE_RUN=0
+      shift 1
+      ;;
+    --enableSeparateProfileRun)
+      SEPARATE_PROFILE_RUN=1
       shift 1
       ;;
     --trtexec)
@@ -162,7 +184,16 @@ if [[ $BATCH_WAS_SET -eq 1 ]]; then
   echo "[run_trtexec] Add \"--batch=$BATCH\" via --extra/-- if your workflow requires passing it explicitly."
 fi
 
-CMD=("$TRTEXEC" "--loadEngine=$ENGINE" "--warmUp=$WARMUP" "--iterations=$ITERS" "--avgRuns=$AVGRUNS" "--exportTimes=$TIMES_JSON" "--exportProfile=$PROFILE_JSON" "--dumpProfile")
+CMD=("$TRTEXEC" "--loadEngine=$ENGINE" "--warmUp=$WARMUP" "--iterations=$ITERS" "--avgRuns=$AVGRUNS" "--exportTimes=$TIMES_JSON")
+
+if [[ "$ENABLE_PROFILE" -eq 1 ]]; then
+  CMD+=("--exportProfile=$PROFILE_JSON" "--dumpProfile")
+  if [[ "$SEPARATE_PROFILE_RUN" -eq 1 ]]; then
+    CMD+=("--separateProfileRun")
+  fi
+else
+  echo "[run_trtexec] Per-layer profiling disabled; skipping --dumpProfile/--exportProfile" >&2
+fi
 
 if [[ "$USE_CUDA_GRAPH" -eq 1 ]]; then
   CMD+=("--useCudaGraph")
@@ -184,6 +215,8 @@ RUN_ITERS="$ITERS" \
 RUN_WARMUP="$WARMUP" \
 RUN_AVGRUNS="$AVGRUNS" \
 RUN_USE_CUDA_GRAPH="$USE_CUDA_GRAPH" \
+RUN_ENABLE_PROFILE="$ENABLE_PROFILE" \
+RUN_SEPARATE_PROFILE_RUN="$SEPARATE_PROFILE_RUN" \
 RUN_TRTEXEC="$TRTEXEC" \
 RUN_OUTDIR="$OUTDIR" \
 python3 - "$RUN_CONFIG_JSON" <<'PY'
@@ -207,6 +240,8 @@ config = {
     "warmup": _int_from_env("RUN_WARMUP", 0),
     "avg_runs": _int_from_env("RUN_AVGRUNS", 0),
     "use_cuda_graph": bool(_int_from_env("RUN_USE_CUDA_GRAPH", 0)),
+    "profile_enabled": bool(_int_from_env("RUN_ENABLE_PROFILE", 1)),
+    "separate_profile_run": bool(_int_from_env("RUN_SEPARATE_PROFILE_RUN", 1)),
     "trtexec_binary": os.environ.get("RUN_TRTEXEC"),
     "command": os.environ.get("RUN_CMD"),
     "outdir": os.environ.get("RUN_OUTDIR"),
