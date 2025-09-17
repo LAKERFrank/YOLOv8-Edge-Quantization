@@ -18,7 +18,7 @@ This folder contains a small toolkit for running reproducible TensorRT engine be
 2. Python ≥ 3.8 with the following packages:
    - Required: `numpy`, `pandas`, `matplotlib`.
    - Optional: `scipy`, `tqdm` for extended analyses (not required by default scripts).
-   - `compare_model_outputs.py` additionally requires `tensorrt` and `pycuda` Python bindings.
+   - `compare_model_outputs.py` additionally requires `tensorrt` and `pycuda` Python bindings (and `torch` if you use `--ref_torch`).
 3. (Recommended) Create a Python virtual environment and install the dependencies, e.g.
    ```bash
    python3 -m venv .venv
@@ -71,18 +71,27 @@ This folder contains a small toolkit for running reproducible TensorRT engine be
 
 5. **(Optional) Compare FP32 vs INT8 outputs**
    ```bash
+   # Engine vs engine comparison
    python evaluation_tool/compare_model_outputs.py \
      --ref_engine path/to/fp32.engine \
      --test_engine path/to/int8.engine \
      --batch 1 \
      --n 10 \
      --outdir artifacts/compare_fp32_int8
+
+   # Engine vs PyTorch/TorchScript module
+   python evaluation_tool/compare_model_outputs.py \
+     --ref_torch path/to/model.pt \
+     --test_engine path/to/int8.engine \
+     --n 10 \
+     --torch-device cuda  # or cpu
    ```
-   The script executes both engines with identical random inputs and stores:
+   The script executes both implementations with identical random inputs and stores:
    - `output_diff.json` containing aggregated MAE / maximum absolute differences per output tensor.
    - `per_sample_diff.json` with raw per-sample metrics.
    - Per-sample inputs/outputs inside `artifacts/compare_fp32_int8/samples/` (disable with `--skip-output-save`).
    - Use `--input-shape name:dim,dim,...` for dynamic shapes. Provide the full explicit shape (include batch dimension for implicit-batch engines).
+   - When using `--ref_torch`, supply a TorchScript file or a saved `nn.Module` that can be loaded via `torch.jit.load`/`torch.load`. Use `--torch-input-style named` if the module expects keyword arguments instead of positional tensors.
 
 ## Script details & options
 
@@ -107,10 +116,11 @@ This folder contains a small toolkit for running reproducible TensorRT engine be
 - Handles multiple nesting layouts (`layers`, `profile`, generic nested dicts) and deduplicates repeated entries by `(name, avg_time)` pairs.
 
 ### `compare_model_outputs.py`
-- Requires both engines to expose identical bindings (names and dtypes). The script validates compatibility before running.
+- Works with TensorRT-to-TensorRT comparisons **or** TensorRT vs. PyTorch/TorchScript (`--ref_torch`). When both sides use TensorRT, the script validates that bindings match exactly (names, dtypes, shapes).
 - Supports explicit and implicit batch engines. For implicit batch networks, ensure `--batch` matches the engine batch size.
 - Use `--profile-index` to select an optimisation profile when running engines built with multiple profiles.
 - If any input has dynamic dimensions, specify them via `--input-shape input_name:dim,dim,...`. For example: `--input-shape images:1,3,640,640`.
+- For PyTorch references, provide a module that accepts the generated tensors either positionally (default) or via keyword arguments (`--torch-input-style named`). Ensure the module can consume tensors with the same dtypes/shapes as the TensorRT engine. Outputs must be tensors (single tensor, sequence, or dict keyed by TensorRT binding names).
 
 ### `generate_report.py`
 - Usage: `python generate_report.py --artifacts artifacts/<run>`.

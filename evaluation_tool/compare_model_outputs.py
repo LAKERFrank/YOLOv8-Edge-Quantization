@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections.abc import Mapping as MappingABC, Sequence as SequenceABC
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -68,6 +69,14 @@ def build_binding_info(engine: trt.ICudaEngine) -> Dict[str, BindingInfo]:
             is_input=engine.binding_is_input(idx),
         )
     return info
+
+
+def get_binding_names(engine: trt.ICudaEngine, *, inputs: bool) -> List[str]:
+    names: List[str] = []
+    for idx in range(engine.num_bindings):
+        if engine.binding_is_input(idx) == inputs:
+            names.append(engine.get_binding_name(idx))
+    return names
 
 
 def ensure_engines_compatible(
@@ -170,6 +179,30 @@ def generate_random_inputs(
             data = rng.standard_normal(shape).astype(np.float32).astype(dtype)
         inputs[name] = data
     return inputs
+
+
+def load_torch_module(module_path: Path, device: str):
+    import torch
+
+    resolved = module_path.resolve()
+
+    try:
+        module = torch.jit.load(str(resolved), map_location=device)
+    except Exception as exc:
+        try:
+            loaded = torch.load(str(resolved), map_location=device)
+        except Exception as load_exc:  # pragma: no cover - depends on runtime files
+            raise RuntimeError(
+                f"Failed to load TorchScript/PyTorch module from {resolved}"
+            ) from load_exc
+        if not isinstance(loaded, torch.nn.Module):
+            raise TypeError(
+                "Loaded PyTorch object is not an nn.Module. Provide a TorchScript file or serialized module."
+            ) from exc
+        module = loaded
+    module.eval()
+    module.to(device)
+    return module
 
 
 class TRTEngineRunner:
@@ -285,6 +318,105 @@ class TRTEngineRunner:
         return host_outputs
 
 
+class TorchModuleRunner:
+    def __init__(
+        self,
+        module_path: Path,
+        input_bindings: Mapping[str, BindingInfo],
+        output_names: Sequence[str],
+        device: str,
+        input_style: str,
+    ) -> None:
+        import torch
+
+        if input_style not in {"auto", "positional", "named"}:
+            raise ValueError("input_style must be one of {'auto', 'positional', 'named'}")
+        self.module_path = Path(module_path)
+        self.device = torch.device(device)
+        self.module = load_torch_module(self.module_path, str(self.device))
+        self.input_order = [
+            name for name, binding in input_bindings.items() if binding.is_input
+        ]
+        self.input_dtypes: Dict[str, np.dtype] = {
+            name: binding.dtype for name, binding in input_bindings.items() if binding.is_input
+        }
+        self.output_names = list(output_names)
+        self.input_style = input_style
+        self.module.eval()
+        self.module.to(self.device)
+
+    def _tensor_to_numpy(self, tensor: "torch.Tensor") -> np.ndarray:
+        import torch
+
+        if not isinstance(tensor, torch.Tensor):
+            raise TypeError(
+                "Reference module returned a non-tensor output; only tensors are supported."
+            )
+        return tensor.detach().to("cpu").numpy()
+
+    def infer(self, inputs: Mapping[str, np.ndarray]) -> Dict[str, np.ndarray]:
+        import torch
+
+        torch_inputs: List["torch.Tensor"] = []
+        torch_kwargs: Dict[str, "torch.Tensor"] = {}
+
+        for name in self.input_order:
+            if name not in inputs:
+                raise KeyError(f"Missing input '{name}' for Torch reference module")
+            arr = np.asarray(inputs[name])
+            expected_dtype = self.input_dtypes[name]
+            if arr.dtype != expected_dtype:
+                arr = arr.astype(expected_dtype)
+            if not arr.flags.c_contiguous:
+                arr = np.ascontiguousarray(arr)
+            tensor = torch.from_numpy(arr).to(self.device)
+            torch_inputs.append(tensor)
+            torch_kwargs[name] = tensor
+
+        with torch.no_grad():
+            if self.input_style == "named":
+                outputs = self.module(**torch_kwargs)
+            elif self.input_style == "positional":
+                outputs = self.module(*torch_inputs)
+            else:
+                try:
+                    outputs = self.module(**torch_kwargs)
+                except TypeError:
+                    outputs = self.module(*torch_inputs)
+
+        result: Dict[str, np.ndarray] = {}
+        if isinstance(outputs, torch.Tensor):
+            if not self.output_names:
+                raise ValueError("Torch reference module produced a tensor but no output bindings are defined")
+            result[self.output_names[0]] = self._tensor_to_numpy(outputs)
+            return result
+
+        if isinstance(outputs, MappingABC):
+            for name, tensor in outputs.items():
+                if name in self.output_names:
+                    result[name] = self._tensor_to_numpy(tensor)
+            missing = [name for name in self.output_names if name not in result]
+            if missing:
+                raise KeyError(
+                    "Torch reference module did not return tensors for outputs: "
+                    + ", ".join(missing)
+                )
+            return result
+
+        if isinstance(outputs, SequenceABC):
+            if len(outputs) != len(self.output_names):
+                raise ValueError(
+                    "Torch reference module returned a sequence whose length does not match the engine outputs"
+                )
+            for name, tensor in zip(self.output_names, outputs):
+                result[name] = self._tensor_to_numpy(tensor)
+            return result
+
+        raise TypeError(
+            "Torch reference module returned unsupported output type. Use tensors, dicts, or sequences of tensors."
+        )
+
+
 def compute_diff(
     reference_outputs: Mapping[str, np.ndarray],
     test_outputs: Mapping[str, np.ndarray],
@@ -348,8 +480,21 @@ def save_sample_npz(path: Path, arrays: Mapping[str, np.ndarray]) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Compare outputs of two TensorRT engines.")
-    parser.add_argument("--ref_engine", required=True, type=Path, help="Reference (e.g., FP32) engine")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Compare outputs between a TensorRT engine and a reference implementation "
+            "(another TensorRT engine or a PyTorch module)."
+        )
+    )
+    ref_group = parser.add_mutually_exclusive_group(required=True)
+    ref_group.add_argument(
+        "--ref_engine", type=Path, help="Reference (e.g., FP32) TensorRT engine"
+    )
+    ref_group.add_argument(
+        "--ref_torch",
+        type=Path,
+        help="Reference PyTorch/TorchScript module (.pt/.pth) for comparison",
+    )
     parser.add_argument("--test_engine", required=True, type=Path, help="Test (e.g., INT8) engine")
     parser.add_argument("--batch", type=int, default=1, help="Batch size for implicit-batch engines")
     parser.add_argument("--n", type=int, default=10, help="Number of random samples to evaluate")
@@ -377,6 +522,19 @@ def main() -> None:
         action="store_true",
         help="Skip saving per-sample input/output NPZ files",
     )
+    parser.add_argument(
+        "--torch-device",
+        type=str,
+        default=None,
+        help="Device to execute the PyTorch reference module (default: cuda if available)",
+    )
+    parser.add_argument(
+        "--torch-input-style",
+        type=str,
+        choices=["auto", "positional", "named"],
+        default="auto",
+        help="How to feed tensors into the PyTorch reference module",
+    )
     args = parser.parse_args()
 
     provided_shapes: Dict[str, Tuple[int, ...]] = {}
@@ -386,26 +544,51 @@ def main() -> None:
 
     args.outdir.mkdir(parents=True, exist_ok=True)
 
-    ref_engine = load_engine(args.ref_engine)
     test_engine = load_engine(args.test_engine)
 
-    ref_bindings = build_binding_info(ref_engine)
     test_bindings = build_binding_info(test_engine)
-    ensure_engines_compatible(ref_bindings, test_bindings)
-
-    ref_shapes = resolve_input_shapes(ref_engine, provided_shapes, args.batch, args.profile_index)
     test_shapes = resolve_input_shapes(test_engine, provided_shapes, args.batch, args.profile_index)
-    for name, shape in ref_shapes.items():
-        if name not in test_shapes:
-            raise ValueError(f"Input '{name}' missing in test engine")
-        if tuple(test_shapes[name]) != tuple(shape):
-            raise ValueError(
-                f"Input shape mismatch for '{name}': {shape} vs {test_shapes[name]}"
-            )
+
+    if args.ref_engine:
+        ref_engine = load_engine(args.ref_engine)
+        ref_bindings = build_binding_info(ref_engine)
+        ensure_engines_compatible(ref_bindings, test_bindings)
+        ref_shapes = resolve_input_shapes(
+            ref_engine, provided_shapes, args.batch, args.profile_index
+        )
+        for name, shape in ref_shapes.items():
+            if name not in test_shapes:
+                raise ValueError(f"Input '{name}' missing in test engine")
+            if tuple(test_shapes[name]) != tuple(shape):
+                raise ValueError(
+                    f"Input shape mismatch for '{name}': {shape} vs {test_shapes[name]}"
+                )
+        reference_runner: Any = TRTEngineRunner(ref_engine, args.batch, args.profile_index)
+        reference_type = "tensorrt"
+        reference_path = Path(args.ref_engine).resolve()
+        random_input_bindings = ref_bindings
+        torch_device = None
+    else:
+        ref_shapes = test_shapes
+        reference_type = "pytorch"
+        reference_path = Path(args.ref_torch).resolve()
+        if args.torch_device is None:
+            import torch
+
+            torch_device = "cuda" if torch.cuda.is_available() else "cpu"
+        else:
+            torch_device = args.torch_device
+        reference_runner = TorchModuleRunner(
+            module_path=Path(args.ref_torch),
+            input_bindings=test_bindings,
+            output_names=get_binding_names(test_engine, inputs=False),
+            device=torch_device,
+            input_style=args.torch_input_style,
+        )
+        random_input_bindings = test_bindings
 
     rng = np.random.default_rng(args.seed)
 
-    ref_runner = TRTEngineRunner(ref_engine, args.batch, args.profile_index)
     test_runner = TRTEngineRunner(test_engine, args.batch, args.profile_index)
 
     diff_records: List[Dict[str, Mapping[str, float]]] = []
@@ -414,8 +597,8 @@ def main() -> None:
         samples_dir.mkdir(parents=True, exist_ok=True)
 
     for i in range(args.n):
-        inputs = generate_random_inputs(ref_bindings, ref_shapes, rng)
-        ref_outputs = ref_runner.infer(inputs)
+        inputs = generate_random_inputs(random_input_bindings, ref_shapes, rng)
+        ref_outputs = reference_runner.infer(inputs)
         test_outputs = test_runner.infer(inputs)
         diff = compute_diff(ref_outputs, test_outputs)
         diff_records.append(diff)
@@ -427,8 +610,8 @@ def main() -> None:
 
     aggregated = aggregate_diffs(diff_records)
 
-    report = {
-        "ref_engine": str(Path(args.ref_engine).resolve()),
+    report: Dict[str, Any] = {
+        "reference_type": reference_type,
         "test_engine": str(Path(args.test_engine).resolve()),
         "batch": args.batch,
         "samples": args.n,
@@ -436,6 +619,13 @@ def main() -> None:
         "input_shapes": {name: list(shape) for name, shape in ref_shapes.items()},
         "diff": aggregated,
     }
+
+    if reference_type == "tensorrt":
+        report["ref_engine"] = str(reference_path)
+    else:
+        report["ref_torch"] = str(reference_path)
+        report["torch_device"] = torch_device
+        report["torch_input_style"] = args.torch_input_style
 
     summary_path = args.outdir / "output_diff.json"
     with summary_path.open("w", encoding="utf-8") as f:
