@@ -76,6 +76,22 @@ def _safe_float(value) -> Optional[float]:
         return None
 
 
+def _safe_bool(value) -> Optional[bool]:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, np.integer)):
+        return bool(int(value))
+    if isinstance(value, (float, np.floating)):
+        return bool(int(value))
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "y", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "n", "off"}:
+            return False
+    return None
+
+
 def _normalise_engine_metadata(raw: Mapping[str, object]) -> Dict[str, object]:
     if not isinstance(raw, Mapping):
         return {}
@@ -130,6 +146,48 @@ def _normalise_engine_metadata(raw: Mapping[str, object]) -> Dict[str, object]:
     return result
 
 
+def _normalise_run_config(raw: Mapping[str, object]) -> Dict[str, object]:
+    if not isinstance(raw, Mapping):
+        return {}
+
+    def _first(*keys: str):
+        for key in keys:
+            if key in raw and raw[key] not in (None, ""):
+                return raw[key]
+        return None
+
+    result: Dict[str, object] = {}
+
+    timestamp = _first("timestamp_iso", "timestamp", "run_timestamp")
+    if timestamp is not None:
+        result["timestamp_iso"] = str(timestamp)
+
+    for field, aliases in (
+        ("batch", ("batch", "batch_size", "run_batch")),
+        ("iterations", ("iterations", "iters", "benchmark_iterations")),
+        ("warmup", ("warmup", "warmUp", "warmup_iterations")),
+        ("avg_runs", ("avg_runs", "avgRuns", "average_runs")),
+    ):
+        value = _safe_int(_first(*aliases))
+        if value is not None:
+            result[field] = value
+
+    use_cuda_graph = _safe_bool(_first("use_cuda_graph", "useCudaGraph", "cuda_graph"))
+    if use_cuda_graph is not None:
+        result["use_cuda_graph"] = use_cuda_graph
+
+    for field, aliases in (
+        ("trtexec_binary", ("trtexec_binary", "trtexec", "binary")),
+        ("command", ("command", "cmd", "trtexec_command")),
+        ("outdir", ("outdir", "output_dir")),
+    ):
+        value = _first(*aliases)
+        if value is not None:
+            result[field] = str(value)
+
+    return result
+
+
 def gather_engine_info(
     engine_path: Optional[Path], metadata_candidates: Sequence[Path]
 ) -> Optional[Dict[str, object]]:
@@ -178,6 +236,37 @@ def gather_engine_info(
         if info:
             return info
 
+    return None
+
+
+def gather_run_config(candidates: Sequence[Path]) -> Optional[Dict[str, object]]:
+    seen: set[str] = set()
+    for path in candidates:
+        if path is None:
+            continue
+        candidate = path.expanduser()
+        try:
+            candidate_str = str(candidate.resolve(strict=False))
+        except OSError:
+            candidate_str = str(candidate)
+        if candidate_str in seen:
+            continue
+        seen.add(candidate_str)
+        candidate_path = Path(candidate_str)
+        if not candidate_path.exists():
+            continue
+        try:
+            with candidate_path.open("r", encoding="utf-8") as f:
+                raw = json.load(f)
+        except (OSError, json.JSONDecodeError) as exc:
+            print(
+                f"[parse_trtexec_times] Failed to read run configuration from {candidate_path}: {exc}",
+                file=sys.stderr,
+            )
+            continue
+        config = _normalise_run_config(raw)
+        if config:
+            return config
     return None
 
 
@@ -358,6 +447,7 @@ def summarise(
     parsed: Mapping[str, Sequence[float]],
     batch: int,
     engine_info: Optional[Mapping[str, object]] = None,
+    run_config: Optional[Mapping[str, object]] = None,
 ) -> Dict[str, object]:
     latency_series = parsed.get("latencies_ms", [])
     latency_stats = compute_stats(latency_series)
@@ -377,6 +467,8 @@ def summarise(
     }
     if engine_info:
         summary["engine"] = dict(engine_info)
+    if run_config:
+        summary["run_config"] = dict(run_config)
     return summary
 
 
@@ -397,6 +489,12 @@ def write_outputs(
         metadata_path = outdir / "engine_metadata.json"
         with metadata_path.open("w", encoding="utf-8") as f:
             json.dump(engine_info, f, indent=2)
+
+    run_config = summary.get("run_config")
+    if isinstance(run_config, Mapping):
+        run_config_path = outdir / "run_config.json"
+        with run_config_path.open("w", encoding="utf-8") as f:
+            json.dump(run_config, f, indent=2)
 
     latencies = parsed.get("latencies_ms", [])
     if latencies:
@@ -449,6 +547,13 @@ def main() -> None:
         default=None,
         help="Path to engine metadata JSON (defaults to <outdir>/engine_metadata.json)",
     )
+    parser.add_argument(
+        "--run-config",
+        dest="run_config",
+        type=Path,
+        default=None,
+        help="Path to run_config.json (defaults to <outdir>/run_config.json)",
+    )
     args = parser.parse_args()
 
     times_path: Path = args.times_json
@@ -465,7 +570,24 @@ def main() -> None:
 
     engine_info = gather_engine_info(args.engine, metadata_candidates)
 
-    summary = summarise(parsed, args.batch, engine_info)
+    run_config_candidates: List[Path] = []
+    if args.run_config is not None:
+        run_config_candidates.append(args.run_config)
+    run_config_candidates.append(outdir / "run_config.json")
+    run_parent_candidate = times_path.parent / "run_config.json"
+    if run_parent_candidate not in run_config_candidates:
+        run_config_candidates.append(run_parent_candidate)
+
+    run_config = gather_run_config(run_config_candidates)
+    if run_config and "batch" in run_config:
+        cfg_batch = _safe_int(run_config.get("batch"))
+        if cfg_batch not in (None, args.batch):
+            print(
+                f"[parse_trtexec_times] Warning: run_config batch {cfg_batch} differs from provided batch {args.batch}. Using CLI value.",
+                file=sys.stderr,
+            )
+
+    summary = summarise(parsed, args.batch, engine_info, run_config)
 
     write_outputs(parsed, summary, outdir)
     print(f"Wrote summary to {outdir}")

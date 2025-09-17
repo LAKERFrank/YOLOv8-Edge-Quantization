@@ -26,6 +26,7 @@ USAGE
 }
 
 BATCH=1
+BATCH_WAS_SET=0
 ITERS=200
 WARMUP=500
 USE_CUDA_GRAPH=0
@@ -44,6 +45,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --batch)
       BATCH="$2"
+      BATCH_WAS_SET=1
       shift 2
       ;;
     --iters|--iterations)
@@ -155,7 +157,12 @@ PY
 
 echo "[run_trtexec] Saved engine metadata to $ENGINE_METADATA_JSON"
 
-CMD=("$TRTEXEC" "--loadEngine=$ENGINE" "--batch=$BATCH" "--warmUp=$WARMUP" "--iterations=$ITERS" "--avgRuns=$AVGRUNS" "--exportTimes=$TIMES_JSON" "--exportProfile=$PROFILE_JSON" "--dumpProfile")
+if [[ $BATCH_WAS_SET -eq 1 ]]; then
+  echo "[run_trtexec] Using batch size $BATCH for throughput reporting. Serialized engines embed their execution shapes, so --batch is not forwarded to trtexec."
+  echo "[run_trtexec] Add \"--batch=$BATCH\" via --extra/-- if your workflow requires passing it explicitly."
+fi
+
+CMD=("$TRTEXEC" "--loadEngine=$ENGINE" "--warmUp=$WARMUP" "--iterations=$ITERS" "--avgRuns=$AVGRUNS" "--exportTimes=$TIMES_JSON" "--exportProfile=$PROFILE_JSON" "--dumpProfile")
 
 if [[ "$USE_CUDA_GRAPH" -eq 1 ]]; then
   CMD+=("--useCudaGraph")
@@ -165,6 +172,51 @@ CMD+=("${EXTRA_ARGS[@]}")
 if [[ ${#FORWARD_ARGS[@]} -gt 0 ]]; then
   CMD+=("${FORWARD_ARGS[@]}")
 fi
+
+RUN_CONFIG_JSON="$OUTDIR/run_config.json"
+
+printf -v RUN_COMMAND_STR ' %q' "${CMD[@]}"
+RUN_COMMAND_STR=${RUN_COMMAND_STR:1}
+
+RUN_CMD="$RUN_COMMAND_STR" \
+RUN_BATCH="$BATCH" \
+RUN_ITERS="$ITERS" \
+RUN_WARMUP="$WARMUP" \
+RUN_AVGRUNS="$AVGRUNS" \
+RUN_USE_CUDA_GRAPH="$USE_CUDA_GRAPH" \
+RUN_TRTEXEC="$TRTEXEC" \
+RUN_OUTDIR="$OUTDIR" \
+python3 - "$RUN_CONFIG_JSON" <<'PY'
+import datetime as dt
+import json
+import os
+import sys
+
+out_path = sys.argv[1]
+
+def _int_from_env(key: str, default: int = 0) -> int:
+    try:
+        return int(os.environ.get(key, default))
+    except (TypeError, ValueError):
+        return default
+
+config = {
+    "timestamp_iso": dt.datetime.now(dt.timezone.utc).astimezone().isoformat(),
+    "batch": _int_from_env("RUN_BATCH", 1),
+    "iterations": _int_from_env("RUN_ITERS", 0),
+    "warmup": _int_from_env("RUN_WARMUP", 0),
+    "avg_runs": _int_from_env("RUN_AVGRUNS", 0),
+    "use_cuda_graph": bool(_int_from_env("RUN_USE_CUDA_GRAPH", 0)),
+    "trtexec_binary": os.environ.get("RUN_TRTEXEC"),
+    "command": os.environ.get("RUN_CMD"),
+    "outdir": os.environ.get("RUN_OUTDIR"),
+}
+
+with open(out_path, "w", encoding="utf-8") as f:
+    json.dump(config, f, indent=2)
+PY
+
+echo "[run_trtexec] Saved run configuration to $RUN_CONFIG_JSON"
 
 {
   echo "[run_trtexec] Running trtexec command:"

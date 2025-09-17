@@ -82,6 +82,35 @@ def build_report_text(summary: Dict, top_layers: Optional[pd.DataFrame]) -> str:
         if modified:
             lines.append(f"Last modified: {modified}")
         lines.append("")
+    run_config = summary.get("run_config")
+    if isinstance(run_config, Mapping) and run_config:
+        lines.append("Run configuration:")
+        config_parts = []
+        for label, key in (
+            ("batch", "batch"),
+            ("iterations", "iterations"),
+            ("warmup", "warmup"),
+            ("avg_runs", "avg_runs"),
+        ):
+            value = run_config.get(key)
+            if value is None:
+                continue
+            config_parts.append(f"{label}={value}")
+        use_cuda = run_config.get("use_cuda_graph")
+        if use_cuda is not None:
+            config_parts.append(f"use_cuda_graph={'yes' if use_cuda else 'no'}")
+        if config_parts:
+            lines.append("  " + ", ".join(config_parts))
+        timestamp = run_config.get("timestamp_iso")
+        if timestamp:
+            lines.append(f"  Timestamp: {timestamp}")
+        trtexec_bin = run_config.get("trtexec_binary")
+        if trtexec_bin:
+            lines.append(f"  trtexec binary: {trtexec_bin}")
+        command = run_config.get("command")
+        if command:
+            lines.append(f"  trtexec command: {command}")
+        lines.append("")
     throughput = summary.get("throughput_qps")
     if throughput is not None:
         lines.append(f"Throughput: {throughput:.3f} samples/sec")

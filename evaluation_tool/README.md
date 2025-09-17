@@ -37,8 +37,10 @@ This folder contains a small toolkit for running reproducible TensorRT engine be
      --warmup 500 \
      --useCudaGraph \
      --outdir artifacts/my_model
-   ```
-  The script saves `times.json`, `profile.json`, `engine_metadata.json`, and a `trtexec_stdout.log` file into the specified `--outdir` (created automatically). The metadata file records the absolute engine path, file size, and last modified timestamp for downstream reports.
+  ```
+  The script saves `times.json`, `profile.json`, `engine_metadata.json`, `run_config.json`, and a `trtexec_stdout.log` file into the specified `--outdir` (created automatically). `engine_metadata.json` records the absolute engine path, file size, and last modified timestamp for downstream reports, while `run_config.json` captures the run settings (batch size, iterations, warmup, CUDA Graph usage, and the resolved `trtexec` command).
+
+  > **Note:** TensorRT executes the shapes embedded inside a serialized engine, so the batch size provided to the wrapper is stored for reporting but not forwarded to `trtexec`. If your workflow requires explicitly passing `--batch=<N>` to `trtexec`, forward it via `--extra "--batch=<N>"` or arguments after `--`.
 
 2. **Parse latency statistics**
    ```bash
@@ -88,13 +90,14 @@ This folder contains a small toolkit for running reproducible TensorRT engine be
 - Logs the exact command and all `trtexec` output to `<outdir>/trtexec_stdout.log`. On failures it
   exits with the original `trtexec` status code and prints the last 20 log lines to stderr for
   quicker debugging.
-- Emits `<outdir>/engine_metadata.json` summarising the engine path, size, and modification timestamp. This metadata is automatically consumed by the parsing/report scripts.
+- Emits `<outdir>/engine_metadata.json` summarising the engine path, size, and modification timestamp, plus `<outdir>/run_config.json` documenting the run parameters and resolved `trtexec` command. These metadata files are automatically consumed by the parsing/report scripts.
 
 ### `parse_trtexec_times.py`
 - Usage: `python parse_trtexec_times.py <times.json> <batch> [outdir]`.
 - Robust to minor schema changes (`times`, `perIteration`, nested dicts) and automatically converts units to milliseconds.
 - Produces `latency_percentiles.csv` for plotting percentile curves.
 - Automatically loads `<outdir>/engine_metadata.json` (or accepts `--engine path/to/model.engine`) to capture file size information in `summary.json` / `summary.csv`.
+- Reads `<outdir>/run_config.json` (override with `--run-config <path>`) to embed the recorded benchmark settings into the summary and warn if the stored batch size differs from the command-line argument.
 
 ### `parse_trtexec_profile.py`
 - Usage: `python parse_trtexec_profile.py <profile.json> [--outdir DIR] [--topk N]`.
