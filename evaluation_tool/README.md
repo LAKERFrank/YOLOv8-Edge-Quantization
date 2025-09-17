@@ -144,3 +144,67 @@ rm -rf artifacts/my_model
 ```
 
 Feel free to adapt the scripts (e.g. extend CSV exports, integrate into CI pipelines, or add additional plots) to match your workflow.
+
+# PyTorch Evaluation Toolkit
+
+The PyTorch benchmarking utilities focus on measuring raw GPU inference throughput and latency for YOLOv8 Pose PyTorch models.
+
+## Overview
+
+- `bench_pt_yolo_pose.py` &ndash; Executes warmup + timed iterations of a YOLOv8 Pose `.pt` checkpoint on a CUDA device and reports
+  host/H2D/GPU/D2H latency statistics alongside overall throughput. The script supports grayscale (1-channel) and RGB (3-channel)
+  inputs, configurable batch sizes, FP32/FP16 precision via AMP, and optional TF32 disabling to mirror TensorRT behaviour.
+
+## Prerequisites
+
+1. Linux environment with a CUDA-capable GPU.
+2. Python ≥ 3.8 with:
+   - `torch` (compiled with CUDA support for your driver).
+   - Optional: `ultralytics` if you wish to load checkpoints with the Ultralytics API via `--ultra`.
+3. (Recommended) Create a Python virtual environment and install the dependencies, e.g.
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate
+   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+   pip install ultralytics  # optional, only needed when using --ultra
+   ```
+
+## Usage
+
+Run the benchmark by pointing the CLI at a YOLOv8 Pose checkpoint and specifying the desired shape/precision options:
+
+```bash
+python evaluation_tool/bench_pt_yolo_pose.py \
+  --pt /path/to/best.pt \
+  --imgsz 640 --ch 1 --batch 1 \
+  --iters 2000 --warmup 200 \
+  --device cuda:0 --dtype fp32 --ultra
+```
+
+### Key arguments
+
+- `--pt` (**required**): Path to the YOLOv8 Pose `.pt` weights file.
+- `--imgsz`: Square input resolution (height = width); default `640`.
+- `--ch`: Input channels (1 for grayscale, 3 for RGB); default `1`.
+- `--batch`: Batch size used for both warmup and timed iterations; default `1`.
+- `--iters`: Number of timed iterations included in the statistics; default `2000`.
+- `--warmup`: Warmup iterations (excluded from reporting); default `200`.
+- `--device`: CUDA device string (e.g. `cuda:0`).
+- `--dtype`: Inference precision, `fp32` (default) or `fp16` (enables AMP autocast).
+- `--no_tf32`: Disable TF32 matrix math (enabled by default for parity with TensorRT).
+- `--ultra`: Attempt to load weights through `ultralytics.YOLO` before falling back to `torch.load`.
+
+### Output
+
+The script prints three sections to STDOUT:
+
+1. **Model** &ndash; Resolved checkpoint path, selected device, input shape, dtype, and TF32 state.
+2. **Performance summary** &ndash; Throughput in queries-per-second (QPS) and total host wall time in seconds.
+3. **Latency breakdown** &ndash; Table of host, H2D, GPU, and D2H latency percentiles (min/max/mean/median/p90/p95/p99 in ms).
+
+Additionally, two artefacts are written alongside the checkpoint:
+
+- `bench_pt_result.csv` – CSV file mirroring the latency table for downstream plotting.
+- `bench_pt_result.json` – JSON document capturing CLI arguments, throughput, wall time, and per-stage latency statistics.
+
+Re-running the command with identical inputs should produce stable metrics (within ±5%). Use `--dtype fp16` to benchmark automatic mixed precision and append `--no_tf32` if TF32 should be disabled to match framework-specific baselines.
