@@ -38,14 +38,14 @@ This folder contains a small toolkit for running reproducible TensorRT engine be
      --useCudaGraph \
      --outdir artifacts/my_model
    ```
-   The script saves `times.json`, `profile.json`, and a `trtexec_stdout.log` file into the specified `--outdir` (created automatically).
+  The script saves `times.json`, `profile.json`, `engine_metadata.json`, and a `trtexec_stdout.log` file into the specified `--outdir` (created automatically). The metadata file records the absolute engine path, file size, and last modified timestamp for downstream reports.
 
 2. **Parse latency statistics**
    ```bash
    python evaluation_tool/parse_trtexec_times.py artifacts/my_model/times.json 1
    ```
    Outputs:
-   - `summary.json` / `summary.csv` containing throughput and latency statistics (min/mean/median/percentiles).
+  - `summary.json` / `summary.csv` containing throughput and latency statistics (min/mean/median/percentiles) plus engine file metadata (path, size in bytes/MB, last modified time).
    - `latency_series.csv`, `latency_percentiles.csv`, and optional enqueue/compute time series if available.
 
 3. **Analyse per-layer timings**
@@ -86,11 +86,13 @@ This folder contains a small toolkit for running reproducible TensorRT engine be
 - Accepts `--shape <tensor:dimx...>` to forward dynamic shape definitions to `trtexec`.
 - Use `--extra "--separateProfileRun --memPoolSize=workspace:4096"` or append arguments after `--` to pass additional flags directly.
 - Logs the exact command and all `trtexec` output to `<outdir>/trtexec_stdout.log`.
+- Emits `<outdir>/engine_metadata.json` summarising the engine path, size, and modification timestamp. This metadata is automatically consumed by the parsing/report scripts.
 
 ### `parse_trtexec_times.py`
 - Usage: `python parse_trtexec_times.py <times.json> <batch> [outdir]`.
 - Robust to minor schema changes (`times`, `perIteration`, nested dicts) and automatically converts units to milliseconds.
 - Produces `latency_percentiles.csv` for plotting percentile curves.
+- Automatically loads `<outdir>/engine_metadata.json` (or accepts `--engine path/to/model.engine`) to capture file size information in `summary.json` / `summary.csv`.
 
 ### `parse_trtexec_profile.py`
 - Usage: `python parse_trtexec_profile.py <profile.json> [--outdir DIR] [--topk N]`.

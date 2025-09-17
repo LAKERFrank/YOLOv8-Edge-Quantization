@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Mapping, Optional, Tuple
 
 import matplotlib
 
@@ -52,6 +52,36 @@ def plot_latency_percentiles(percentiles: List[Tuple[float, float]], out_png: Pa
 
 def build_report_text(summary: Dict, top_layers: Optional[pd.DataFrame]) -> str:
     lines = ["TensorRT Benchmark Summary", "===========================", ""]
+    engine_info = summary.get("engine")
+    if isinstance(engine_info, Mapping) and engine_info:
+        path = engine_info.get("path")
+        size_bytes = engine_info.get("size_bytes")
+        size_mb = engine_info.get("size_megabytes")
+        modified = engine_info.get("modified_iso")
+        if path:
+            lines.append(f"Engine path: {path}")
+        if size_bytes is not None:
+            try:
+                size_bytes_int = int(size_bytes)
+            except (TypeError, ValueError):
+                size_bytes_int = None
+            if size_bytes_int is not None:
+                if size_mb is not None:
+                    try:
+                        size_mb_float = float(size_mb)
+                    except (TypeError, ValueError):
+                        size_mb_float = None
+                    if size_mb_float is not None:
+                        lines.append(
+                            f"Engine size: {size_bytes_int} bytes ({size_mb_float:.2f} MiB)"
+                        )
+                    else:
+                        lines.append(f"Engine size: {size_bytes_int} bytes")
+                else:
+                    lines.append(f"Engine size: {size_bytes_int} bytes")
+        if modified:
+            lines.append(f"Last modified: {modified}")
+        lines.append("")
     throughput = summary.get("throughput_qps")
     if throughput is not None:
         lines.append(f"Throughput: {throughput:.3f} samples/sec")

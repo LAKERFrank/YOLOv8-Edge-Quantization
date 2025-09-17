@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
+import sys
 from pathlib import Path
-from typing import Dict, Iterable, List, Mapping, MutableSequence, Sequence
+from typing import Dict, Iterable, List, Mapping, MutableSequence, Optional, Sequence
 
 import numpy as np
 import pandas as pd
@@ -58,6 +60,125 @@ END_TO_END_KEYS = [
 ]
 
 PERCENTILES = [0, 1, 5, 10, 25, 50, 75, 90, 95, 97, 99, 99.5, 99.9, 100]
+
+
+def _safe_int(value) -> Optional[int]:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_float(value) -> Optional[float]:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalise_engine_metadata(raw: Mapping[str, object]) -> Dict[str, object]:
+    if not isinstance(raw, Mapping):
+        return {}
+
+    def _first(*keys: str):
+        for key in keys:
+            if key in raw and raw[key] not in (None, ""):
+                return raw[key]
+        return None
+
+    result: Dict[str, object] = {}
+
+    path_value = _first("path", "engine_path")
+    path_str: Optional[str] = None
+    if path_value is not None:
+        path_obj = Path(str(path_value)).expanduser()
+        try:
+            path_str = str(path_obj.resolve(strict=False))
+        except OSError:
+            path_str = str(path_obj)
+        result["path"] = path_str
+
+    filename_value = _first("filename", "engine_filename")
+    if filename_value is None and path_str:
+        filename_value = Path(path_str).name
+    if filename_value is not None:
+        result["filename"] = str(filename_value)
+
+    size_bytes = _safe_int(_first("size_bytes", "engine_size_bytes"))
+    if size_bytes is not None and size_bytes >= 0:
+        result["size_bytes"] = size_bytes
+
+    size_megabytes = _safe_float(
+        _first("size_megabytes", "engine_size_megabytes", "size_mib", "size_mebibytes")
+    )
+    if size_megabytes is None and size_bytes is not None:
+        size_megabytes = size_bytes / (1024 ** 2)
+    if size_megabytes is not None:
+        result["size_megabytes"] = float(size_megabytes)
+
+    modified_value = _first("modified_iso", "engine_modified_iso", "modified", "mtime_iso")
+    if modified_value is not None:
+        result["modified_iso"] = str(modified_value)
+    elif path_str:
+        try:
+            stat_result = Path(path_str).stat()
+        except OSError:
+            pass
+        else:
+            result["modified_iso"] = dt.datetime.fromtimestamp(stat_result.st_mtime).astimezone().isoformat()
+
+    return result
+
+
+def gather_engine_info(
+    engine_path: Optional[Path], metadata_candidates: Sequence[Path]
+) -> Optional[Dict[str, object]]:
+    if engine_path is not None:
+        candidate = engine_path.expanduser()
+        try:
+            resolved = candidate.resolve(strict=True)
+        except OSError:
+            print(f"[parse_trtexec_times] Engine file '{engine_path}' not found", file=sys.stderr)
+        else:
+            stat_result = resolved.stat()
+            info = {
+                "path": str(resolved),
+                "filename": resolved.name,
+                "size_bytes": int(stat_result.st_size),
+                "size_megabytes": stat_result.st_size / (1024 ** 2),
+                "modified_iso": dt.datetime.fromtimestamp(stat_result.st_mtime).astimezone().isoformat(),
+            }
+            return info
+
+    seen: set[str] = set()
+    for meta_path in metadata_candidates:
+        if meta_path is None:
+            continue
+        candidate = meta_path.expanduser()
+        try:
+            candidate_str = str(candidate.resolve(strict=False))
+        except OSError:
+            candidate_str = str(candidate)
+        if candidate_str in seen:
+            continue
+        seen.add(candidate_str)
+        candidate_path = Path(candidate_str)
+        if not candidate_path.exists():
+            continue
+        try:
+            with candidate_path.open("r", encoding="utf-8") as f:
+                raw = json.load(f)
+        except (OSError, json.JSONDecodeError) as exc:
+            print(
+                f"[parse_trtexec_times] Failed to read engine metadata from {candidate_path}: {exc}",
+                file=sys.stderr,
+            )
+            continue
+        info = _normalise_engine_metadata(raw)
+        if info:
+            return info
+
+    return None
 
 
 def _coerce_to_float(value) -> float | None:
@@ -233,7 +354,11 @@ def parse_times_json(path: Path) -> Dict[str, List[float]]:
     }
 
 
-def summarise(parsed: Mapping[str, Sequence[float]], batch: int) -> Dict[str, object]:
+def summarise(
+    parsed: Mapping[str, Sequence[float]],
+    batch: int,
+    engine_info: Optional[Mapping[str, object]] = None,
+) -> Dict[str, object]:
     latency_series = parsed.get("latencies_ms", [])
     latency_stats = compute_stats(latency_series)
     throughput = None
@@ -250,6 +375,8 @@ def summarise(parsed: Mapping[str, Sequence[float]], batch: int) -> Dict[str, ob
         "compute": compute_stats(parsed.get("compute_ms", [])),
         "end_to_end": compute_stats(parsed.get("end_to_end_ms", [])),
     }
+    if engine_info:
+        summary["engine"] = dict(engine_info)
     return summary
 
 
@@ -264,6 +391,12 @@ def write_outputs(
         json.dump(summary, f, indent=2)
     df = pd.json_normalize(summary)
     df.to_csv(outdir / "summary.csv", index=False)
+
+    engine_info = summary.get("engine")
+    if isinstance(engine_info, Mapping):
+        metadata_path = outdir / "engine_metadata.json"
+        with metadata_path.open("w", encoding="utf-8") as f:
+            json.dump(engine_info, f, indent=2)
 
     latencies = parsed.get("latencies_ms", [])
     if latencies:
@@ -303,13 +436,36 @@ def main() -> None:
         default=None,
         help="Output directory (defaults to JSON parent)",
     )
+    parser.add_argument(
+        "--engine",
+        type=Path,
+        default=None,
+        help="TensorRT engine file to record size information",
+    )
+    parser.add_argument(
+        "--engine-metadata",
+        dest="engine_metadata",
+        type=Path,
+        default=None,
+        help="Path to engine metadata JSON (defaults to <outdir>/engine_metadata.json)",
+    )
     args = parser.parse_args()
 
     times_path: Path = args.times_json
     outdir = args.outdir or times_path.parent
 
     parsed = parse_times_json(times_path)
-    summary = summarise(parsed, args.batch)
+    metadata_candidates: List[Path] = []
+    if args.engine_metadata is not None:
+        metadata_candidates.append(args.engine_metadata)
+    metadata_candidates.append(outdir / "engine_metadata.json")
+    parent_candidate = times_path.parent / "engine_metadata.json"
+    if parent_candidate not in metadata_candidates:
+        metadata_candidates.append(parent_candidate)
+
+    engine_info = gather_engine_info(args.engine, metadata_candidates)
+
+    summary = summarise(parsed, args.batch, engine_info)
 
     write_outputs(parsed, summary, outdir)
     print(f"Wrote summary to {outdir}")

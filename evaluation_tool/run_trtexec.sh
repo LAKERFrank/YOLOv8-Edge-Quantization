@@ -106,15 +106,54 @@ if [[ -z "$ENGINE" ]]; then
   exit 1
 fi
 
+if [[ ! -f "$ENGINE" ]]; then
+  echo "[run_trtexec] Engine file '$ENGINE' does not exist" >&2
+  exit 1
+fi
+
 if ! command -v "$TRTEXEC" >/dev/null 2>&1; then
   echo "[run_trtexec] trtexec binary '$TRTEXEC' not found in PATH" >&2
   exit 2
 fi
 
+ENGINE_ABS=$(python3 -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "$ENGINE")
+ENGINE_SIZE_BYTES=$(stat -c%s "$ENGINE_ABS")
+ENGINE_SIZE_MIB=$(python3 -c 'import sys; print(float(sys.argv[1])/(1024**2))' "$ENGINE_SIZE_BYTES")
+printf '[run_trtexec] Engine file: %s (%s bytes, %.2f MiB)\n' "$ENGINE_ABS" "$ENGINE_SIZE_BYTES" "$ENGINE_SIZE_MIB"
+
 mkdir -p "$OUTDIR"
 TIMES_JSON="$OUTDIR/times.json"
 PROFILE_JSON="$OUTDIR/profile.json"
 LOG_FILE="$OUTDIR/trtexec_stdout.log"
+ENGINE_METADATA_JSON="$OUTDIR/engine_metadata.json"
+
+python3 - "$ENGINE_ABS" "$ENGINE_METADATA_JSON" <<'PY'
+import datetime as dt
+import json
+import os
+import sys
+
+engine_path = sys.argv[1]
+out_path = sys.argv[2]
+
+try:
+    stat_result = os.stat(engine_path)
+except OSError as exc:  # pragma: no cover - handled in shell prior, but kept for completeness
+    raise SystemExit(f"Failed to stat engine file {engine_path}: {exc}")
+
+info = {
+    "path": engine_path,
+    "filename": os.path.basename(engine_path),
+    "size_bytes": int(stat_result.st_size),
+    "size_megabytes": stat_result.st_size / (1024 ** 2),
+    "modified_iso": dt.datetime.fromtimestamp(stat_result.st_mtime).astimezone().isoformat(),
+}
+
+with open(out_path, "w", encoding="utf-8") as f:
+    json.dump(info, f, indent=2)
+PY
+
+echo "[run_trtexec] Saved engine metadata to $ENGINE_METADATA_JSON"
 
 CMD=("$TRTEXEC" "--loadEngine=$ENGINE" "--batch=$BATCH" "--warmUp=$WARMUP" "--iterations=$ITERS" "--avgRuns=$AVGRUNS" "--exportTimes=$TIMES_JSON" "--exportProfile=$PROFILE_JSON" "--dumpProfile")
 
