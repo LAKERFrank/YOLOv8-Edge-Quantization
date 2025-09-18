@@ -1,6 +1,6 @@
-# TensorRT `trtexec` Evaluation Toolkit
+# Evaluation Toolkit
 
-This folder contains a small toolkit for running reproducible TensorRT engine benchmarks using `trtexec`, parsing the generated artefacts, comparing engine outputs, and building presentation-ready charts/reports.
+This folder contains a toolkit for running reproducible benchmarks, parsing artefacts, comparing model outputs, and generating presentation-ready charts/reports for YOLOv8 Pose workflows across TensorRT and PyTorch deployments.
 
 ## Directory layout
 
@@ -9,100 +9,9 @@ This folder contains a small toolkit for running reproducible TensorRT engine be
 - `parse_trtexec_profile.py` &ndash; Parses per-layer timing information from `profile.json` and produces CSV + bar-chart visualisations.
 - `compare_model_outputs.py` &ndash; Benchmarks a YOLOv8 Pose PyTorch model and a TensorRT engine, summarises throughput/latency, and exports comparison CSVs.
 - `generate_report.py` &ndash; Aggregates the artefacts into a consolidated report (`report.json`/`report.md`) and generates latency/per-layer plots.
+- `bench_pt_yolo_pose.py` &ndash; Measures PyTorch inference performance for YOLOv8 Pose checkpoints.
 
-> **Note:** Python scripts expect Python ≥ 3.8. Optional features require additional dependencies listed below.
-
-## Prerequisites
-
-1. Linux environment with TensorRT installed and `trtexec` accessible via `$PATH`.
-2. Python ≥ 3.8 with the following packages:
-   - Required: `numpy`, `pandas`, `matplotlib`.
-   - Optional: `scipy`, `tqdm` for extended analyses (not required by default scripts).
-   - `compare_model_outputs.py` additionally requires `torch` for the PyTorch benchmark and relies on the `trtexec` CLI for engine timing (TensorRT Python bindings are not required).
-3. (Recommended) Create a Python virtual environment and install the dependencies, e.g.
-   ```bash
-   python3 -m venv .venv
-   source .venv/bin/activate
-   pip install numpy pandas matplotlib torch
-   ```
-
-## Typical workflow
-
-1. **Run `trtexec` and capture artefacts**
-   ```bash
-   ./evaluation_tool/run_trtexec.sh \
-     --engine path/to/model.engine \
-     --batch 1 \
-     --iters 300 \
-     --warmup 500 \
-     --useCudaGraph \
-     --outdir artifacts/my_model
-   ```
-  The script saves `times.json`, `profile.json` (unless profiling is disabled), `engine_metadata.json`, `run_config.json`, and a `trtexec_stdout.log` file into the specified `--outdir` (created automatically). `engine_metadata.json` records the absolute engine path, file size, and last modified timestamp for downstream reports, while `run_config.json` captures the run settings (batch size, iterations, warmup, CUDA Graph usage, profiling flags, and the resolved `trtexec` command).
-
-  By default the wrapper requests per-layer profiling via `--dumpProfile` **and** automatically appends `--separateProfileRun` so that TensorRT collects profile data in a dedicated pass without suppressing the end-to-end timing statistics. Disable profiling entirely with `--disableProfile`, or keep the profiler but skip the extra pass with `--disableSeparateProfileRun` if you explicitly need the legacy behaviour.
-
-  > **Note:** TensorRT executes the shapes embedded inside a serialized engine, so the batch size provided to the wrapper is stored for reporting but not forwarded to `trtexec`. If your workflow requires explicitly passing `--batch=<N>` to `trtexec`, forward it via `--extra "--batch=<N>"` or arguments after `--`.
-
-2. **Parse latency statistics**
-   ```bash
-   python evaluation_tool/parse_trtexec_times.py artifacts/my_model/times.json 1
-   ```
-   Outputs:
-  - `summary.json` / `summary.csv` containing throughput and latency statistics (min/mean/median/percentiles) plus engine file metadata (path, size in bytes/MB, last modified time).
-   - `latency_series.csv`, `latency_percentiles.csv`, and optional enqueue/compute time series if available.
-
-3. **Analyse per-layer timings**
-   ```bash
-   python evaluation_tool/parse_trtexec_profile.py artifacts/my_model/profile.json
-   ```
-   Outputs:
-   - `per_layer_times.csv` sorted by average time.
-   - `per_layer_time.png` visualising the top-k (default 30) slowest layers.
-
-4. **Generate consolidated report**
-   ```bash
-   python evaluation_tool/generate_report.py --artifacts artifacts/my_model
-   ```
-   Outputs:
-   - `latency_hist.png`, `percentiles.png`, and (if available) `per_layer_time.png`.
-   - `report.json` aggregating summary metrics, top layers, and optional output comparison results.
-   - `report.md` human-readable summary.
-
-# Compare FP32 vs INT8 outputs
-
-Use `evaluation_tool/compare_model_outputs.py` to benchmark a YOLOv8 Pose PyTorch checkpoint against a TensorRT engine and inspect the performance delta between FP32 and INT8 deployments.
-
-## Quick start
-
-```bash
-python evaluation_tool/compare_model_outputs.py \
-  --pt weights/pose_fp32.pt \
-  --engine trt_quant/engine/pose_int8_minmax.engine \
-  --imgsz 640 \
-  --batch 1 \
-  --ch 1 \
-  --shapes images:1x1x640x640 \
-  --pt-iters 2000 \
-  --pt-warmup 200
-```
-
-- The PyTorch measurements reuse `bench_pt_yolo_pose.py`. Tune `--pt-dtype` (`fp32`, `fp16`), `--pt-device`, `--pt-iters`, `--pt-warmup`, and `--pt-no-tf32` to mirror your deployment settings. Add `--pt-ultra` to load checkpoints via `ultralytics.YOLO` when required.
-- TensorRT statistics are collected by launching `trtexec`. Adjust `--input-name` and `--shapes` to match the engine bindings, append extra CLI flags with `--trtexec-extra-args`, and disable verbose logging with `--no-trtexec-verbose` if you prefer compact output.
-- The script attempts to infer the engine precision and TF32 state from the `trtexec` logs. Override them explicitly via `--engine-dtype` or `--engine-tf32` when necessary.
-
-## Output artefacts
-
-- Two per-model summaries (PyTorch and TensorRT) are printed to the console, each listing the resolved dtype, TF32 state, throughput, total host walltime, and a latency table (min/max/mean/median/percentiles for host, H2D, GPU, and D2H).
-- A comparison section follows, highlighting throughput and host walltime deltas plus latency differences/ratios (`engine - pt` and `engine / pt`).
-- All metrics are exported to `artifacts/compare/<pt_stem>_vs_<engine_stem>.csv` by default. Customise the destination with `--output-dir`/`--output-name`. The CSV includes the original PyTorch/TensorRT numbers alongside `engine_minus_pt` and `engine_over_pt_ratio` columns for every statistic.
-- Reuse the generated CSVs for downstream visualisations or spreadsheets; each row is labelled with the corresponding latency component and percentile.
-
-## Tips
-
-- Ensure the batch size, image size, and channel count are identical for both benchmarks to keep comparisons fair.
-- Lock GPU clocks (e.g. on Jetson devices) during measurements to reduce variance across runs.
-- When benchmarking multiple engines, store them in distinct CSVs under `artifacts/compare/` to simplify longitudinal tracking.
+> **Note:** Python scripts expect Python ≥ 3.8. Optional features require additional dependencies listed in the sections below.
 
 ## Script details & options
 
@@ -155,6 +64,106 @@ rm -rf artifacts/my_model
 ```
 
 Feel free to adapt the scripts (e.g. extend CSV exports, integrate into CI pipelines, or add additional plots) to match your workflow.
+
+# TensorRT `trtexec` Evaluation Toolkit
+
+The TensorRT utilities streamline `trtexec` invocations, parse the generated artefacts, and assemble consolidated latency / throughput reports.
+
+## Prerequisites
+
+1. Linux environment with TensorRT installed and `trtexec` accessible via `$PATH`.
+2. Python ≥ 3.8 with the following packages:
+   - Required: `numpy`, `pandas`, `matplotlib`.
+   - Optional: `scipy`, `tqdm` for extended analyses (not required by default scripts).
+3. (Recommended) Create a Python virtual environment and install the dependencies, e.g.
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate
+   pip install numpy pandas matplotlib
+   ```
+
+## Typical workflow
+
+1. **Run `trtexec` and capture artefacts**
+   ```bash
+   ./evaluation_tool/run_trtexec.sh \
+     --engine path/to/model.engine \
+     --batch 1 \
+     --iters 300 \
+     --warmup 500 \
+     --useCudaGraph \
+     --outdir artifacts/my_model
+   ```
+  The script saves `times.json`, `profile.json` (unless profiling is disabled), `engine_metadata.json`, `run_config.json`, and a `trtexec_stdout.log` file into the specified `--outdir` (created automatically). `engine_metadata.json` records the absolute engine path, file size, and last modified timestamp for downstream reports, while `run_config.json` captures the run settings (batch size, iterations, warmup, CUDA Graph usage, profiling flags, and the resolved `trtexec` command).
+
+  By default the wrapper requests per-layer profiling via `--dumpProfile` **and** automatically appends `--separateProfileRun` so that TensorRT collects profile data in a dedicated pass without suppressing the end-to-end timing statistics. Disable profiling entirely with `--disableProfile`, or keep the profiler but skip the extra pass with `--disableSeparateProfileRun` if you explicitly need the legacy behaviour.
+
+  > **Note:** TensorRT executes the shapes embedded inside a serialized engine, so the batch size provided to the wrapper is stored for reporting but not forwarded to `trtexec`. If your workflow requires explicitly passing `--batch=<N>` to `trtexec`, forward it via `--extra "--batch=<N>"` or arguments after `--`.
+
+2. **Parse latency statistics**
+   ```bash
+   python evaluation_tool/parse_trtexec_times.py artifacts/my_model/times.json 1
+   ```
+   Outputs:
+  - `summary.json` / `summary.csv` containing throughput and latency statistics (min/mean/median/percentiles) plus engine file metadata (path, size in bytes/MB, last modified time).
+   - `latency_series.csv`, `latency_percentiles.csv`, and optional enqueue/compute time series if available.
+
+3. **Analyse per-layer timings**
+   ```bash
+   python evaluation_tool/parse_trtexec_profile.py artifacts/my_model/profile.json
+   ```
+   Outputs:
+   - `per_layer_times.csv` sorted by average time.
+   - `per_layer_time.png` visualising the top-k (default 30) slowest layers.
+
+4. **Generate consolidated report**
+   ```bash
+   python evaluation_tool/generate_report.py --artifacts artifacts/my_model
+   ```
+   Outputs:
+   - `latency_hist.png`, `percentiles.png`, and (if available) `per_layer_time.png`.
+   - `report.json` aggregating summary metrics, top layers, and optional output comparison results.
+   - `report.md` human-readable summary.
+
+# Compare FP32 vs INT8 outputs
+
+Use `evaluation_tool/compare_model_outputs.py` to benchmark a YOLOv8 Pose PyTorch checkpoint against a TensorRT engine and inspect the performance delta between FP32 and INT8 deployments.
+
+## Prerequisites
+
+- Python ≥ 3.8 with a CUDA-enabled `torch` install (required for the PyTorch benchmark). Install `ultralytics` if you plan to load checkpoints through `--pt-ultra`.
+- TensorRT installation that exposes the `trtexec` binary via `$PATH`.
+
+## Quick start
+
+```bash
+python evaluation_tool/compare_model_outputs.py \
+  --pt weights/pose_fp32.pt \
+  --engine trt_quant/engine/pose_int8_minmax.engine \
+  --imgsz 640 \
+  --batch 1 \
+  --ch 1 \
+  --shapes images:1x1x640x640 \
+  --pt-iters 2000 \
+  --pt-warmup 200
+```
+
+- The PyTorch measurements reuse `bench_pt_yolo_pose.py`. Tune `--pt-dtype` (`fp32`, `fp16`), `--pt-device`, `--pt-iters`, `--pt-warmup`, and `--pt-no-tf32` to mirror your deployment settings. Add `--pt-ultra` to load checkpoints via `ultralytics.YOLO` when required.
+- TensorRT statistics are collected by launching `trtexec`. Adjust `--input-name` and `--shapes` to match the engine bindings, append extra CLI flags with `--trtexec-extra-args`, and disable verbose logging with `--no-trtexec-verbose` if you prefer compact output.
+- The script attempts to infer the engine precision and TF32 state from the `trtexec` logs. Override them explicitly via `--engine-dtype` or `--engine-tf32` when necessary.
+
+## Output artefacts
+
+- Two per-model summaries (PyTorch and TensorRT) are printed to the console, each listing the resolved dtype, TF32 state, throughput, total host walltime, and a latency table (min/max/mean/median/percentiles for host, H2D, GPU, and D2H).
+- A comparison section follows, highlighting throughput and host walltime deltas plus latency differences/ratios (`engine - pt` and `engine / pt`).
+- All metrics are exported to `artifacts/compare/<pt_stem>_vs_<engine_stem>.csv` by default. Customise the destination with `--output-dir`/`--output-name`. The CSV includes the original PyTorch/TensorRT numbers alongside `engine_minus_pt` and `engine_over_pt_ratio` columns for every statistic.
+- Reuse the generated CSVs for downstream visualisations or spreadsheets; each row is labelled with the corresponding latency component and percentile.
+
+## Tips
+
+- Ensure the batch size, image size, and channel count are identical for both benchmarks to keep comparisons fair.
+- Lock GPU clocks (e.g. on Jetson devices) during measurements to reduce variance across runs.
+- When benchmarking multiple engines, store them in distinct CSVs under `artifacts/compare/` to simplify longitudinal tracking.
 
 # PyTorch Evaluation Toolkit
 
