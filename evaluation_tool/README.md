@@ -38,9 +38,9 @@ This folder contains a toolkit for running reproducible benchmarks, parsing arte
 ### `compare_model_outputs.py`
 - Usage: `python compare_model_outputs.py --pt <model.pt> --engine <model.engine> [--imgsz 640] [--batch 1] [--ch 1]`.
 - PyTorch benchmarking flags mirror `bench_pt_yolo_pose.py`: adjust `--pt-iters`, `--pt-warmup`, `--pt-device`, `--pt-dtype`, `--pt-no-tf32`, and `--pt-ultra` as needed.
-- TensorRT benchmarking flags: `--input-name`, `--shapes`, `--trtexec`, `--trtexec-extra-args`, `--no-trtexec-verbose`, `--engine-dtype`, and `--engine-tf32`.
-- Output controls: `--output-dir` and `--output-name` determine where comparison CSVs are stored (default `artifacts/compare/`).
-- CSVs capture absolute values, `engine_minus_pt`, and `engine_over_pt_ratio` columns for every reported metric alongside the console summaries.
+- TensorRT benchmarking flags: use `--shapes` to match the engine bindings, `--trtexec` to pick the binary, and `--trtexec-args` to forward additional CLI arguments (quoted string).
+- Output controls: `--output-dir` determines where comparison CSVs are stored (default `artifacts/compare/`). Filenames are derived from the model stems (e.g. `<pt>__vs__<engine>.csv`).
+- CSVs capture the raw PyTorch/TensorRT values alongside `delta` (`engine - pt`) and `ratio` (`engine / pt`) columns for every reported metric.
 
 ### `generate_report.py`
 - Usage: `python generate_report.py --artifacts artifacts/<run>`.
@@ -149,14 +149,14 @@ python evaluation_tool/compare_model_outputs.py \
 ```
 
 - The PyTorch measurements reuse `bench_pt_yolo_pose.py`. Tune `--pt-dtype` (`fp32`, `fp16`), `--pt-device`, `--pt-iters`, `--pt-warmup`, and `--pt-no-tf32` to mirror your deployment settings. Add `--pt-ultra` to load checkpoints via `ultralytics.YOLO` when required.
-- TensorRT statistics are collected by launching `trtexec`. Adjust `--input-name` and `--shapes` to match the engine bindings, append extra CLI flags with `--trtexec-extra-args`, and disable verbose logging with `--no-trtexec-verbose` if you prefer compact output.
-- The script attempts to infer the engine precision and TF32 state from the `trtexec` logs. Override them explicitly via `--engine-dtype` or `--engine-tf32` when necessary.
+- TensorRT statistics are collected by launching `trtexec`. Supply `--shapes` when the default `images:<batch>x<ch>x<imgsz>x<imgsz>` inference is insufficient, point `--trtexec` at a custom binary if required, and append extra CLI flags via `--trtexec-args "--flag=value"`.
+- The script attempts to infer the engine precision and TF32 state from the `trtexec` logs.
 
 ## Output artefacts
 
 - Two per-model summaries (PyTorch and TensorRT) are printed to the console, each listing the resolved dtype, TF32 state, throughput, total host walltime, and a latency table (min/max/mean/median/percentiles for host, H2D, GPU, and D2H).
 - A comparison section follows, highlighting throughput and host walltime deltas plus latency differences/ratios (`engine - pt` and `engine / pt`).
-- All metrics are exported to `artifacts/compare/<pt_stem>_vs_<engine_stem>.csv` by default. Customise the destination with `--output-dir`/`--output-name`. The CSV includes the original PyTorch/TensorRT numbers alongside `engine_minus_pt` and `engine_over_pt_ratio` columns for every statistic.
+- All metrics are exported to `artifacts/compare/<pt_stem>__vs__<engine_stem>.csv` by default. Customise the destination with `--output-dir`. The CSV includes the original PyTorch/TensorRT numbers alongside `delta` and `ratio` columns for every statistic.
 - Reuse the generated CSVs for downstream visualisations or spreadsheets; each row is labelled with the corresponding latency component and percentile.
 
 ## Tips

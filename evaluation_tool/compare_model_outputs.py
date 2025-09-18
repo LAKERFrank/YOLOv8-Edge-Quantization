@@ -309,6 +309,27 @@ def get_latency(summary: BenchmarkSummary, component: str, stat: str) -> Optiona
     return float(value) if value is not None else None
 
 
+def merge_latency_components(
+    pt_summary: BenchmarkSummary, engine_summary: BenchmarkSummary
+) -> List[str]:
+    """Merge latency component keys while preserving their original ordering."""
+
+    ordered_components: List[str] = []
+    seen = set()
+
+    for key in pt_summary.latencies.keys():
+        if key not in seen:
+            ordered_components.append(key)
+            seen.add(key)
+
+    for key in engine_summary.latencies.keys():
+        if key not in seen:
+            ordered_components.append(key)
+            seen.add(key)
+
+    return ordered_components
+
+
 def build_comparison_rows(pt_summary: BenchmarkSummary, engine_summary: BenchmarkSummary) -> List[ComparisonRow]:
     rows: List[ComparisonRow] = []
 
@@ -322,7 +343,7 @@ def build_comparison_rows(pt_summary: BenchmarkSummary, engine_summary: Benchmar
         )
     )
 
-    components = sorted(set(pt_summary.latencies.keys()) | set(engine_summary.latencies.keys()))
+    components = merge_latency_components(pt_summary, engine_summary)
     for component in components:
         for stat in STAT_NAMES:
             rows.append(
@@ -412,8 +433,7 @@ def print_benchmark_summary(summary: BenchmarkSummary) -> None:
         header = ("Latency",) + STAT_NAMES
         row_format = "{:<10} " + " ".join(["{:>10}"] * len(STAT_NAMES))
         print(row_format.format(*header))
-        for key in sorted(summary.latencies.keys()):
-            stats = summary.latencies[key]
+        for key, stats in summary.latencies.items():
             values = [format_float(stats.get(stat), precision=4) for stat in STAT_NAMES]
             print(row_format.format(key, *values))
     print()
