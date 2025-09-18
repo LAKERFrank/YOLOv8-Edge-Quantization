@@ -111,11 +111,10 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
 
 
 def maybe_allow_ultralytics_safe_globals() -> None:
-    """Allowlist Ultralytics PoseModel for PyTorch checkpoint deserialization when available."""
+    """Allowlist YOLO pose classes required for PyTorch checkpoint deserialization."""
 
     serialization_spec = importlib.util.find_spec("torch.serialization")
-    pose_spec = importlib.util.find_spec("ultralytics.nn.tasks")
-    if serialization_spec is None or pose_spec is None:
+    if serialization_spec is None:
         return
 
     serialization_module = importlib.import_module("torch.serialization")
@@ -123,12 +122,25 @@ def maybe_allow_ultralytics_safe_globals() -> None:
     if add_safe_globals is None:
         return
 
-    tasks_module = importlib.import_module("ultralytics.nn.tasks")
-    pose_model = getattr(tasks_module, "PoseModel", None)
-    if pose_model is None:
-        return
+    safe_classes = []
 
-    add_safe_globals([pose_model])
+    pose_spec = importlib.util.find_spec("ultralytics.nn.tasks")
+    if pose_spec is not None:
+        tasks_module = importlib.import_module("ultralytics.nn.tasks")
+        pose_model = getattr(tasks_module, "PoseModel", None)
+        if pose_model is not None:
+            safe_classes.append(pose_model)
+
+    container_spec = importlib.util.find_spec("torch.nn.modules.container")
+    if container_spec is not None:
+        container_module = importlib.import_module("torch.nn.modules.container")
+        for attr in ("Sequential", "ModuleList", "ParameterList"):
+            container_cls = getattr(container_module, attr, None)
+            if container_cls is not None:
+                safe_classes.append(container_cls)
+
+    if safe_classes:
+        add_safe_globals(safe_classes)
 
 
 def run_pt_benchmark(args: argparse.Namespace) -> BenchmarkSummary:
