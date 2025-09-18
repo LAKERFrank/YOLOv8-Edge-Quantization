@@ -7,12 +7,14 @@ import argparse
 import csv
 import importlib
 import importlib.util
+import inspect
 import math
 import os
 import re
 import shlex
 import subprocess
 import sys
+import pkgutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
@@ -110,8 +112,41 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     return args
 
 
+def _collect_ultralytics_classes() -> List[type]:
+    """Collect Ultralytics classes needed for safe torch.load allowlisting."""
+
+    try:
+        import ultralytics  # type: ignore
+    except ImportError:
+        return []
+
+    module_names = {"ultralytics"}
+
+    if hasattr(ultralytics, "__path__"):
+        for module_info in pkgutil.walk_packages(ultralytics.__path__, ultralytics.__name__ + "."):
+            module_names.add(module_info.name)
+
+    classes: List[type] = []
+    seen: set[type] = set()
+    for module_name in sorted(module_names):
+        try:
+            module = importlib.import_module(module_name)
+        except Exception:
+            continue
+
+        for _, obj in inspect.getmembers(module, inspect.isclass):
+            if obj in seen:
+                continue
+            obj_module = getattr(obj, "__module__", "")
+            if obj_module.startswith("ultralytics"):
+                classes.append(obj)
+                seen.add(obj)
+
+    return classes
+
+
 def maybe_allow_ultralytics_safe_globals() -> None:
-    """Allowlist YOLO pose classes required for PyTorch checkpoint deserialization."""
+    """Allowlist Ultralytics and container classes for PyTorch checkpoint deserialization."""
 
     serialization_spec = importlib.util.find_spec("torch.serialization")
     if serialization_spec is None:
@@ -122,14 +157,8 @@ def maybe_allow_ultralytics_safe_globals() -> None:
     if add_safe_globals is None:
         return
 
-    safe_classes = []
-
-    pose_spec = importlib.util.find_spec("ultralytics.nn.tasks")
-    if pose_spec is not None:
-        tasks_module = importlib.import_module("ultralytics.nn.tasks")
-        pose_model = getattr(tasks_module, "PoseModel", None)
-        if pose_model is not None:
-            safe_classes.append(pose_model)
+    safe_classes: List[type] = []
+    safe_classes.extend(_collect_ultralytics_classes())
 
     container_spec = importlib.util.find_spec("torch.nn.modules.container")
     if container_spec is not None:
