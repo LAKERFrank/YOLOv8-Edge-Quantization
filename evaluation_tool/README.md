@@ -7,7 +7,7 @@ This folder contains a small toolkit for running reproducible TensorRT engine be
 - `run_trtexec.sh` &ndash; Bash wrapper that standardises `trtexec` runs and stores JSON artefacts inside an output folder.
 - `parse_trtexec_times.py` &ndash; Parses `times.json` produced via `--exportTimes`, computes latency / throughput statistics, and exports summary CSV/JSON files.
 - `parse_trtexec_profile.py` &ndash; Parses per-layer timing information from `profile.json` and produces CSV + bar-chart visualisations.
-- `compare_model_outputs.py` &ndash; Executes two engines (e.g. FP32 vs INT8) with identical random inputs using TensorRT + PyCUDA and reports element-wise differences.
+- `compare_model_outputs.py` &ndash; Benchmarks a YOLOv8 Pose PyTorch model and a TensorRT engine, summarises throughput/latency, and exports comparison CSVs.
 - `generate_report.py` &ndash; Aggregates the artefacts into a consolidated report (`report.json`/`report.md`) and generates latency/per-layer plots.
 
 > **Note:** Python scripts expect Python ≥ 3.8. Optional features require additional dependencies listed below.
@@ -18,12 +18,12 @@ This folder contains a small toolkit for running reproducible TensorRT engine be
 2. Python ≥ 3.8 with the following packages:
    - Required: `numpy`, `pandas`, `matplotlib`.
    - Optional: `scipy`, `tqdm` for extended analyses (not required by default scripts).
-   - `compare_model_outputs.py` additionally requires `tensorrt` and `pycuda` Python bindings (and `torch` if you use `--ref_torch`).
+   - `compare_model_outputs.py` additionally requires `torch` for the PyTorch benchmark and relies on the `trtexec` CLI for engine timing (TensorRT Python bindings are not required).
 3. (Recommended) Create a Python virtual environment and install the dependencies, e.g.
    ```bash
    python3 -m venv .venv
    source .venv/bin/activate
-   pip install numpy pandas matplotlib pycuda tensorrt
+   pip install numpy pandas matplotlib torch
    ```
 
 ## Typical workflow
@@ -69,29 +69,40 @@ This folder contains a small toolkit for running reproducible TensorRT engine be
    - `report.json` aggregating summary metrics, top layers, and optional output comparison results.
    - `report.md` human-readable summary.
 
-5. **(Optional) Compare FP32 vs INT8 outputs**
-   ```bash
-   # Engine vs engine comparison
-   python evaluation_tool/compare_model_outputs.py \
-     --ref_engine path/to/fp32.engine \
-     --test_engine path/to/int8.engine \
-     --batch 1 \
-     --n 10 \
-     --outdir artifacts/compare_fp32_int8
+# Compare FP32 vs INT8 outputs
 
-   # Engine vs PyTorch/TorchScript module
-   python evaluation_tool/compare_model_outputs.py \
-     --ref_torch path/to/model.pt \
-     --test_engine path/to/int8.engine \
-     --n 10 \
-     --torch-device cuda  # or cpu
-   ```
-   The script executes both implementations with identical random inputs and stores:
-   - `output_diff.json` containing aggregated MAE / maximum absolute differences per output tensor.
-   - `per_sample_diff.json` with raw per-sample metrics.
-   - Per-sample inputs/outputs inside `artifacts/compare_fp32_int8/samples/` (disable with `--skip-output-save`).
-   - Use `--input-shape name:dim,dim,...` for dynamic shapes. Provide the full explicit shape (include batch dimension for implicit-batch engines).
-   - When using `--ref_torch`, supply a TorchScript file or a saved `nn.Module` that can be loaded via `torch.jit.load`/`torch.load`. Use `--torch-input-style named` if the module expects keyword arguments instead of positional tensors.
+Use `evaluation_tool/compare_model_outputs.py` to benchmark a YOLOv8 Pose PyTorch checkpoint against a TensorRT engine and inspect the performance delta between FP32 and INT8 deployments.
+
+## Quick start
+
+```bash
+python evaluation_tool/compare_model_outputs.py \
+  --pt weights/pose_fp32.pt \
+  --engine trt_quant/engine/pose_int8_minmax.engine \
+  --imgsz 640 \
+  --batch 1 \
+  --ch 1 \
+  --shapes images:1x1x640x640 \
+  --pt-iters 2000 \
+  --pt-warmup 200
+```
+
+- The PyTorch measurements reuse `bench_pt_yolo_pose.py`. Tune `--pt-dtype` (`fp32`, `fp16`), `--pt-device`, `--pt-iters`, `--pt-warmup`, and `--pt-no-tf32` to mirror your deployment settings. Add `--pt-ultra` to load checkpoints via `ultralytics.YOLO` when required.
+- TensorRT statistics are collected by launching `trtexec`. Adjust `--input-name` and `--shapes` to match the engine bindings, append extra CLI flags with `--trtexec-extra-args`, and disable verbose logging with `--no-trtexec-verbose` if you prefer compact output.
+- The script attempts to infer the engine precision and TF32 state from the `trtexec` logs. Override them explicitly via `--engine-dtype` or `--engine-tf32` when necessary.
+
+## Output artefacts
+
+- Two per-model summaries (PyTorch and TensorRT) are printed to the console, each listing the resolved dtype, TF32 state, throughput, total host walltime, and a latency table (min/max/mean/median/percentiles for host, H2D, GPU, and D2H).
+- A comparison section follows, highlighting throughput and host walltime deltas plus latency differences/ratios (`engine - pt` and `engine / pt`).
+- All metrics are exported to `artifacts/compare/<pt_stem>_vs_<engine_stem>.csv` by default. Customise the destination with `--output-dir`/`--output-name`. The CSV includes the original PyTorch/TensorRT numbers alongside `engine_minus_pt` and `engine_over_pt_ratio` columns for every statistic.
+- Reuse the generated CSVs for downstream visualisations or spreadsheets; each row is labelled with the corresponding latency component and percentile.
+
+## Tips
+
+- Ensure the batch size, image size, and channel count are identical for both benchmarks to keep comparisons fair.
+- Lock GPU clocks (e.g. on Jetson devices) during measurements to reduce variance across runs.
+- When benchmarking multiple engines, store them in distinct CSVs under `artifacts/compare/` to simplify longitudinal tracking.
 
 ## Script details & options
 
@@ -116,11 +127,11 @@ This folder contains a small toolkit for running reproducible TensorRT engine be
 - Handles multiple nesting layouts (`layers`, `profile`, generic nested dicts) and deduplicates repeated entries by `(name, avg_time)` pairs.
 
 ### `compare_model_outputs.py`
-- Works with TensorRT-to-TensorRT comparisons **or** TensorRT vs. PyTorch/TorchScript (`--ref_torch`). When both sides use TensorRT, the script validates that bindings match exactly (names, dtypes, shapes).
-- Supports explicit and implicit batch engines. For implicit batch networks, ensure `--batch` matches the engine batch size.
-- Use `--profile-index` to select an optimisation profile when running engines built with multiple profiles.
-- If any input has dynamic dimensions, specify them via `--input-shape input_name:dim,dim,...`. For example: `--input-shape images:1,3,640,640`.
-- For PyTorch references, provide a module that accepts the generated tensors either positionally (default) or via keyword arguments (`--torch-input-style named`). Ensure the module can consume tensors with the same dtypes/shapes as the TensorRT engine. Outputs must be tensors (single tensor, sequence, or dict keyed by TensorRT binding names).
+- Usage: `python compare_model_outputs.py --pt <model.pt> --engine <model.engine> [--imgsz 640] [--batch 1] [--ch 1]`.
+- PyTorch benchmarking flags mirror `bench_pt_yolo_pose.py`: adjust `--pt-iters`, `--pt-warmup`, `--pt-device`, `--pt-dtype`, `--pt-no-tf32`, and `--pt-ultra` as needed.
+- TensorRT benchmarking flags: `--input-name`, `--shapes`, `--trtexec`, `--trtexec-extra-args`, `--no-trtexec-verbose`, `--engine-dtype`, and `--engine-tf32`.
+- Output controls: `--output-dir` and `--output-name` determine where comparison CSVs are stored (default `artifacts/compare/`).
+- CSVs capture absolute values, `engine_minus_pt`, and `engine_over_pt_ratio` columns for every reported metric alongside the console summaries.
 
 ### `generate_report.py`
 - Usage: `python generate_report.py --artifacts artifacts/<run>`.
@@ -130,9 +141,9 @@ This folder contains a small toolkit for running reproducible TensorRT engine be
 ## Common issues & troubleshooting
 
 - **`times.json`/`profile.json` structure differs:** The parsers try multiple schema variants, but if a new TensorRT version changes keys, inspect the JSON and extend the key lists (`LAT_KEYS`, `TIME_KEYS`, etc.) accordingly.
-- **Dynamic shapes not resolved:** Supply explicit shapes via `--shape` when running `trtexec` and use the same shapes with `--input-shape` for output comparison.
-- **Engine execution failures in comparison script:** Confirm that both engines were built with identical input bindings and that the active optimisation profile supports the requested shapes. For Jetson devices, ensure GPU clocks are locked to avoid watchdog timeouts.
-- **Missing dependencies:** Install `pycuda` and TensorRT Python wheels matching your TensorRT version. On Jetson, these are typically pre-installed in `/usr/lib/python*/dist-packages`.
+- **Dynamic shapes not resolved:** Supply explicit shapes via `--shape` when running `trtexec` and forward the same definition to `compare_model_outputs.py` through `--shapes`.
+- **Engine benchmarking failures:** Confirm that the TensorRT engine supports the requested shape/profile combination and that the `trtexec` binary is visible on `$PATH`. For Jetson devices, ensure GPU clocks are locked to avoid watchdog timeouts.
+- **Missing dependencies:** Install a CUDA-compatible `torch` build for PyTorch benchmarking and verify that your TensorRT installation ships a working `trtexec` executable.
 - **Matplotlib backend errors:** All scripts set `matplotlib` to use the non-interactive `Agg` backend, so they can run on headless servers.
 
 ## Cleaning up
