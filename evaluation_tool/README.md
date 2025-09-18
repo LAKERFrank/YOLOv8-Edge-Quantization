@@ -37,7 +37,7 @@ This folder contains a small toolkit for running reproducible TensorRT engine be
      --warmup 500 \
      --useCudaGraph \
      --outdir artifacts/my_model
-  ```
+   ```
   The script saves `times.json`, `profile.json` (unless profiling is disabled), `engine_metadata.json`, `run_config.json`, and a `trtexec_stdout.log` file into the specified `--outdir` (created automatically). `engine_metadata.json` records the absolute engine path, file size, and last modified timestamp for downstream reports, while `run_config.json` captures the run settings (batch size, iterations, warmup, CUDA Graph usage, profiling flags, and the resolved `trtexec` command).
 
   By default the wrapper requests per-layer profiling via `--dumpProfile` **and** automatically appends `--separateProfileRun` so that TensorRT collects profile data in a dedicated pass without suppressing the end-to-end timing statistics. Disable profiling entirely with `--disableProfile`, or keep the profiler but skip the extra pass with `--disableSeparateProfileRun` if you explicitly need the legacy behaviour.
@@ -175,7 +175,7 @@ Run the benchmark by pointing the CLI at a YOLOv8 Pose checkpoint and specifying
 
 ```bash
 python evaluation_tool/bench_pt_yolo_pose.py \
-  --pt /path/to/best.pt \
+  --pt /storage/YOLOv8-Edge-Quantization/models/best.pt \
   --imgsz 640 --ch 1 --batch 1 \
   --iters 2000 --warmup 200 \
   --device cuda:0 --dtype fp32 --ultra
