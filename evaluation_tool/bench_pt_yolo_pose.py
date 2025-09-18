@@ -9,6 +9,7 @@ import json
 import math
 import os
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any, Dict, Iterator, List, MutableMapping, Optional, Sequence
 
@@ -164,6 +165,14 @@ def create_device_buffer(host_tensor: torch.Tensor, device: torch.device) -> tor
     return torch.empty_like(host_tensor, device=device)
 
 
+def autocast_context(enabled: bool):
+    if hasattr(torch, "amp") and hasattr(torch.amp, "autocast"):
+        return torch.amp.autocast("cuda", enabled=enabled)
+    if hasattr(torch.cuda, "amp") and hasattr(torch.cuda.amp, "autocast"):
+        return torch.cuda.amp.autocast(enabled=enabled)
+    return nullcontext()
+
+
 def compute_percentile(sorted_values: Sequence[float], q: float) -> float:
     if not sorted_values:
         return float("nan")
@@ -285,7 +294,7 @@ def benchmark(args: BenchmarkArgs) -> BenchmarkResult:
                 h2d_times.append(h2d_start.elapsed_time(h2d_end))
 
             gpu_start.record()
-            with torch.cuda.amp.autocast(enabled=autocast_enabled):
+            with autocast_context(autocast_enabled):
                 output = model(device_input)
             gpu_end.record()
             gpu_end.synchronize()
