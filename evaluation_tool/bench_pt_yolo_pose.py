@@ -127,15 +127,7 @@ def load_model(pt_path: str, device: torch.device, prefer_ultra: bool) -> torch.
             errors.append(f"ultralytics.YOLO load failed: {exc}")
 
     if module is None:
-        load_kwargs = {"map_location": device}
-        # PyTorch 2.6 switched the default of weights_only to True, which breaks
-        # checkpoints containing full model objects such as Ultralytics' PoseModel.
-        # Explicitly disable that behaviour while remaining compatible with
-        # earlier versions that do not accept the argument.
-        try:
-            loaded = torch.load(pt_path, weights_only=False, **load_kwargs)
-        except TypeError:
-            loaded = torch.load(pt_path, **load_kwargs)
+        loaded = torch.load(pt_path, map_location=device)
         module = extract_module(loaded)
         if module is None:
             errors.append("torch.load() did not return an nn.Module or contain a model")

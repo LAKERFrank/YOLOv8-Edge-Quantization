@@ -21,6 +21,33 @@ from bench_pt_yolo_pose import (
     benchmark as run_pt_benchmark,
 )
 
+
+def allow_ultralytics_pose_pickles() -> None:
+    """Allowlist Ultralytics PoseModel so torch.load works with weights_only checkpoints."""
+
+    try:
+        import torch  # type: ignore
+    except Exception:  # pragma: no cover - import depends on environment
+        return
+
+    serialization = getattr(torch, "serialization", None)
+    if serialization is None:
+        return
+
+    add_safe_globals = getattr(serialization, "add_safe_globals", None)
+    if add_safe_globals is None:
+        return
+
+    try:
+        from ultralytics.nn.tasks import PoseModel  # type: ignore
+    except Exception:  # pragma: no cover - optional dependency
+        return
+
+    try:
+        add_safe_globals([PoseModel])
+    except Exception:  # pragma: no cover - safety guard only
+        return
+
 STAT_NAMES = ("min", "max", "mean", "median", "p90", "p95", "p99")
 METRIC_NAMES = ("host", "h2d", "gpu", "d2h")
 LABEL_TO_METRIC = (
@@ -126,6 +153,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
 
 
 def run_pt_evaluation(args: argparse.Namespace) -> ModelSummary:
+    allow_ultralytics_pose_pickles()
+
     pt_path = Path(args.pt).expanduser().resolve()
     pt_args = PTBenchmarkArgs(
         pt=str(pt_path),
