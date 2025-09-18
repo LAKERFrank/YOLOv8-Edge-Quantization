@@ -1,147 +1,105 @@
 #!/usr/bin/env python3
-"""Benchmark PyTorch models against TensorRT engines and compare performance."""
+"""Compare YOLOv8 pose performance between PyTorch and TensorRT benchmarks."""
 
 from __future__ import annotations
 
 import argparse
 import csv
+import importlib
+import importlib.util
 import math
+import os
 import re
 import shlex
 import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Mapping, Optional, Sequence
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
-from bench_pt_yolo_pose import (
-    BenchmarkArgs as PTBenchmarkArgs,
-    BenchmarkResult as PTBenchmarkResult,
-    SUPPORTED_DTYPES as PT_SUPPORTED_DTYPES,
-    benchmark as run_pt_benchmark,
-)
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 
+import bench_pt_yolo_pose  # noqa: E402
 
-def allow_ultralytics_pose_pickles() -> None:
-    """Allowlist Ultralytics PoseModel so torch.load works with weights_only checkpoints."""
-
-    try:
-        import torch  # type: ignore
-    except Exception:  # pragma: no cover - import depends on environment
-        return
-
-    serialization = getattr(torch, "serialization", None)
-    if serialization is None:
-        return
-
-    add_safe_globals = getattr(serialization, "add_safe_globals", None)
-    if add_safe_globals is None:
-        return
-
-    try:
-        from ultralytics.nn.tasks import PoseModel  # type: ignore
-    except Exception:  # pragma: no cover - optional dependency
-        return
-
-    try:
-        add_safe_globals([PoseModel])
-    except Exception:  # pragma: no cover - safety guard only
-        return
-
-STAT_NAMES = ("min", "max", "mean", "median", "p90", "p95", "p99")
-METRIC_NAMES = ("host", "h2d", "gpu", "d2h")
-LABEL_TO_METRIC = (
-    ("host latency", "host"),
-    ("latency", "host"),
-    ("h2d latency", "h2d"),
-    ("gpu compute time", "gpu"),
-    ("gpu latency", "gpu"),
-    ("d2h latency", "d2h"),
-)
+STAT_NAMES: Tuple[str, ...] = ("min", "max", "mean", "median", "p90", "p95", "p99")
+DEFAULT_ARTIFACT_DIR = Path("artifacts/compare")
 
 
 @dataclass
-class ModelSummary:
-    title: str
+class BenchmarkSummary:
+    """Normalized view over latency statistics for a single benchmark run."""
+
+    label: str
     path: str
     dtype: Optional[str]
     tf32: Optional[bool]
-    throughput_qps: float
-    total_host_walltime_s: float
-    metrics: Dict[str, Dict[str, float]]
+    throughput_qps: Optional[float]
+    total_host_walltime_s: Optional[float]
+    latencies: Dict[str, Dict[str, float]]
+    input_spec: Optional[str] = None
 
 
 @dataclass
-class TrtexecParseResult:
-    throughput_qps: float
-    total_host_walltime_s: float
-    metrics: Dict[str, Dict[str, float]]
-    dtype: Optional[str]
-    tf32: Optional[bool]
-    raw_output: str
+class ComparisonRow:
+    """Container for a single comparison entry."""
+
+    category: str
+    metric: str
+    pt_value: Optional[float]
+    engine_value: Optional[float]
+    delta: Optional[float]
+    ratio: Optional[float]
 
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Benchmark a PyTorch .pt model and a TensorRT engine, then compare the results.",
+        description="Benchmark a PyTorch YOLOv8 pose model against a TensorRT engine.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--pt", required=True, help="Path to the YOLOv8-Pose .pt weights")
-    parser.add_argument("--engine", required=True, help="Path to the TensorRT engine file")
-    parser.add_argument("--imgsz", type=int, default=640, help="Square input image size")
-    parser.add_argument("--batch", type=int, default=1, help="Batch size for benchmarking")
-    parser.add_argument("--ch", type=int, default=1, choices=(1, 3), help="Number of input channels")
-    parser.add_argument("--pt-iters", type=int, default=2000, help="Number of timed iterations for PyTorch")
-    parser.add_argument("--pt-warmup", type=int, default=200, help="Number of warmup iterations for PyTorch")
-    parser.add_argument("--pt-device", type=str, default="cuda:0", help="CUDA device string for PyTorch")
+    parser.add_argument("--pt", required=True, type=str, help="Path to YOLOv8 pose .pt weights")
+    parser.add_argument("--engine", required=True, type=str, help="Path to TensorRT engine file")
+    parser.add_argument("--imgsz", default=640, type=int, help="Input image resolution (square)")
+    parser.add_argument("--ch", default=1, type=int, help="Number of model input channels")
+    parser.add_argument("--batch", default=1, type=int, help="Batch size for benchmarking")
+    parser.add_argument("--pt-iters", default=2000, type=int, help="Timed iterations for PyTorch benchmark")
+    parser.add_argument("--pt-warmup", default=200, type=int, help="Warmup iterations for PyTorch benchmark")
     parser.add_argument(
         "--pt-dtype",
-        type=str,
         default="fp32",
-        choices=tuple(PT_SUPPORTED_DTYPES.keys()),
-        help="Computation dtype for PyTorch benchmarking",
-    )
-    parser.add_argument("--pt-no-tf32", action="store_true", help="Disable TF32 for PyTorch benchmarking")
-    parser.add_argument("--pt-ultra", action="store_true", help="Use ultralytics.YOLO loader for the PyTorch model")
-    parser.add_argument("--input-name", type=str, default="images", help="Input tensor name for the TensorRT engine")
-    parser.add_argument("--shapes", type=str, default=None, help="Explicit shapes string passed to trtexec")
-    parser.add_argument("--trtexec", type=str, default="trtexec", help="Path to the trtexec binary")
-    parser.add_argument(
-        "--trtexec-extra-args",
         type=str,
+        choices=tuple(bench_pt_yolo_pose.SUPPORTED_DTYPES.keys()),
+        help="Computation precision for the PyTorch benchmark",
+    )
+    parser.add_argument("--pt-device", default="cuda:0", type=str, help="CUDA device string")
+    parser.add_argument("--pt-no-tf32", action="store_true", help="Disable TF32 for PyTorch benchmark")
+    parser.add_argument("--pt-ultra", action="store_true", help="Attempt ultralytics.YOLO loader first")
+    parser.add_argument(
+        "--shapes",
+        type=str,
+        help="TensorRT input shapes definition (e.g. images:1x1x640x640). Defaults to batch/ch/imgsz args.",
+    )
+    parser.add_argument("--trtexec", default="trtexec", type=str, help="trtexec binary to execute")
+    parser.add_argument(
+        "--trtexec-args",
         default="",
-        help="Additional arguments for trtexec (provide as a quoted string)",
-    )
-    parser.add_argument("--no-trtexec-verbose", action="store_true", help="Do not pass --verbose to trtexec")
-    parser.add_argument(
-        "--engine-dtype",
         type=str,
-        default="auto",
-        help="Override the dtype label for the engine. Use 'auto' to rely on trtexec output.",
-    )
-    parser.add_argument(
-        "--engine-tf32",
-        type=str,
-        default="auto",
-        choices=("auto", "on", "off"),
-        help="Report TF32 status for the engine output",
+        help="Additional arguments appended to trtexec invocation (quoted string)",
     )
     parser.add_argument(
         "--output-dir",
+        default=DEFAULT_ARTIFACT_DIR,
         type=Path,
-        default=Path("artifacts/compare"),
-        help="Directory where the comparison CSV will be written",
+        help="Directory to store comparison CSV output",
     )
-    parser.add_argument(
-        "--output-name",
-        type=str,
-        default=None,
-        help="Optional name for the comparison CSV file",
-    )
+
     args = parser.parse_args(argv)
 
     if args.imgsz <= 0:
         parser.error("--imgsz must be positive")
+    if args.ch <= 0:
+        parser.error("--ch must be positive")
     if args.batch <= 0:
         parser.error("--batch must be positive")
     if args.pt_iters <= 0:
@@ -152,12 +110,33 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     return args
 
 
-def run_pt_evaluation(args: argparse.Namespace) -> ModelSummary:
-    allow_ultralytics_pose_pickles()
+def maybe_allow_ultralytics_safe_globals() -> None:
+    """Allowlist Ultralytics PoseModel for PyTorch checkpoint deserialization when available."""
 
-    pt_path = Path(args.pt).expanduser().resolve()
-    pt_args = PTBenchmarkArgs(
-        pt=str(pt_path),
+    serialization_spec = importlib.util.find_spec("torch.serialization")
+    pose_spec = importlib.util.find_spec("ultralytics.nn.tasks")
+    if serialization_spec is None or pose_spec is None:
+        return
+
+    serialization_module = importlib.import_module("torch.serialization")
+    add_safe_globals = getattr(serialization_module, "add_safe_globals", None)
+    if add_safe_globals is None:
+        return
+
+    tasks_module = importlib.import_module("ultralytics.nn.tasks")
+    pose_model = getattr(tasks_module, "PoseModel", None)
+    if pose_model is None:
+        return
+
+    add_safe_globals([pose_model])
+
+
+def run_pt_benchmark(args: argparse.Namespace) -> BenchmarkSummary:
+    """Execute the PyTorch benchmark via bench_pt_yolo_pose.py."""
+
+    maybe_allow_ultralytics_safe_globals()
+    bench_args = bench_pt_yolo_pose.BenchmarkArgs(
+        pt=args.pt,
         imgsz=args.imgsz,
         ch=args.ch,
         batch=args.batch,
@@ -168,589 +147,341 @@ def run_pt_evaluation(args: argparse.Namespace) -> ModelSummary:
         no_tf32=args.pt_no_tf32,
         ultra=args.pt_ultra,
     )
-    result: PTBenchmarkResult = run_pt_benchmark(pt_args)
-    metrics = normalise_metrics(result.metrics)
-    tf32_status = not args.pt_no_tf32
 
-    return ModelSummary(
-        title="PyTorch Model",
-        path=str(pt_path),
+    result = bench_pt_yolo_pose.benchmark(bench_args)
+    latencies = {
+        name: {stat: float(value) for stat, value in stats.items()}
+        for name, stats in result.metrics.items()
+    }
+
+    input_spec = f"{args.batch}x{args.ch}x{args.imgsz}x{args.imgsz}"
+
+    return BenchmarkSummary(
+        label="PyTorch",
+        path=os.path.abspath(args.pt),
         dtype=args.pt_dtype,
-        tf32=tf32_status,
+        tf32=not args.pt_no_tf32,
         throughput_qps=result.throughput_qps,
         total_host_walltime_s=result.total_host_walltime_s,
-        metrics=metrics,
+        latencies=latencies,
+        input_spec=input_spec,
     )
 
 
-def run_trtexec_evaluation(args: argparse.Namespace) -> ModelSummary:
-    engine_path = Path(args.engine).expanduser().resolve()
-    shapes = (
-        args.shapes
-        if args.shapes
-        else f"{args.input_name}:{args.batch}x{args.ch}x{args.imgsz}x{args.imgsz}"
+def build_trtexec_command(args: argparse.Namespace, shapes: str) -> List[str]:
+    base_cmd = [
+        args.trtexec,
+        f"--loadEngine={args.engine}",
+        f"--shapes={shapes}",
+        "--verbose",
+    ]
+    extra = shlex.split(args.trtexec_args) if args.trtexec_args else []
+    return base_cmd + extra
+
+
+def run_trtexec(args: argparse.Namespace, shapes: str) -> Tuple[BenchmarkSummary, str]:
+    """Execute trtexec and parse its verbose summary."""
+
+    cmd = build_trtexec_command(args, shapes)
+    completed = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
     )
-    extra_args = shlex.split(args.trtexec_extra_args) if args.trtexec_extra_args else []
-    trtexec_result = execute_trtexec(
-        engine_path=engine_path,
-        shapes=shapes,
-        binary=args.trtexec,
-        extra_args=extra_args,
-        verbose=not args.no_trtexec_verbose,
-    )
-
-    if math.isnan(trtexec_result.throughput_qps):
-        raise RuntimeError("Unable to parse throughput from trtexec output")
-
-    metrics = normalise_metrics(trtexec_result.metrics)
-
-    engine_dtype = trtexec_result.dtype
-    if args.engine_dtype and args.engine_dtype.lower() != "auto":
-        engine_dtype = args.engine_dtype
-
-    tf32_status = trtexec_result.tf32
-    if args.engine_tf32 and args.engine_tf32.lower() != "auto":
-        tf32_status = parse_tf32_option(args.engine_tf32)
-
-    return ModelSummary(
-        title="TensorRT Engine",
-        path=str(engine_path),
-        dtype=engine_dtype,
-        tf32=tf32_status,
-        throughput_qps=trtexec_result.throughput_qps,
-        total_host_walltime_s=trtexec_result.total_host_walltime_s,
-        metrics=metrics,
-    )
-
-
-def execute_trtexec(
-    engine_path: Path,
-    shapes: str,
-    binary: str,
-    extra_args: Sequence[str],
-    verbose: bool,
-) -> TrtexecParseResult:
-    command = [binary, f"--loadEngine={engine_path}"]
-    if shapes:
-        command.append(f"--shapes={shapes}")
-    if verbose:
-        command.append("--verbose")
-    command.extend(extra_args)
-    command_str = " ".join(shlex.quote(str(part)) for part in command)
-    print(f"Running trtexec: {command_str}")
-
-    try:
-        completed = subprocess.run(
-            [str(part) for part in command],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            check=True,
+    if completed.returncode != 0:
+        raise RuntimeError(
+            "trtexec command failed with exit code {}\nCommand: {}\nOutput:\n{}".format(
+                completed.returncode, " ".join(cmd), completed.stdout
+            )
         )
-    except FileNotFoundError as exc:  # pragma: no cover - depends on environment
-        raise RuntimeError(f"trtexec binary '{binary}' was not found") from exc
-    except subprocess.CalledProcessError as exc:
-        output = exc.stdout or ""
-        if output:
-            sys.stderr.write(output)
-        raise RuntimeError("trtexec command failed") from exc
 
-    output_text = completed.stdout
-    return parse_trtexec_output(output_text)
+    summary = parse_trtexec_output(completed.stdout)
+    summary.label = "TensorRT"
+    summary.path = os.path.abspath(args.engine)
+    summary.input_spec = shapes
+    return summary, completed.stdout
 
 
-def parse_trtexec_output(output: str) -> TrtexecParseResult:
-    throughput_qps = float("nan")
-    total_host_walltime_s = float("nan")
-    metrics: Dict[str, Dict[str, float]] = {}
-    dtype_tokens: list[str] = []
-    tf32_status: Optional[bool] = None
+def parse_trtexec_output(output: str) -> BenchmarkSummary:
+    """Parse throughput, TF32 and latency tables from trtexec output."""
 
-    for raw_line in output.splitlines():
-        line = normalise_trtexec_line(raw_line)
-        if not line:
-            continue
+    dtype: Optional[str] = None
+    tf32: Optional[bool] = None
+    throughput: Optional[float] = None
+    walltime: Optional[float] = None
+    latencies: Dict[str, Dict[str, float]] = {}
 
-        tf32_candidate = resolve_tf32_from_line(line)
-        if tf32_candidate is not None:
-            tf32_status = tf32_candidate
+    lines = output.splitlines()
 
-        format_match = re.search(
-            r"(?:Input|Output)\(s\)\s*format\s*:\s*(.+)",
-            line,
-            re.IGNORECASE,
-        )
-        if format_match:
-            dtype_tokens.extend(extract_dtype_tokens(format_match.group(1)))
-            continue
-
-        precision_match = re.search(r"Precision\s*:\s*(.+)", line, re.IGNORECASE)
-        if precision_match:
-            dtype_tokens.extend(extract_dtype_tokens(precision_match.group(1)))
-            continue
-
-        data_type_match = re.search(r"Data\s+type\s*:\s*(.+)", line, re.IGNORECASE)
-        if data_type_match:
-            dtype_tokens.extend(extract_dtype_tokens(data_type_match.group(1)))
-            continue
-
-        throughput_match = re.search(
-            r"Throughput(?:\s*\(qps\))?\s*:\s*([\d.+\-eE]+)",
-            line,
-            re.IGNORECASE,
-        )
-        if throughput_match:
-            throughput_qps = float(throughput_match.group(1))
-            continue
-
-        host_time_match = re.search(
-            r"Total Host Walltime(?:\s*\((?P<unit>[a-z]+)\))?\s*:\s*(?P<value>[\d.+\-eE]+)",
-            line,
-            re.IGNORECASE,
-        )
-        if host_time_match:
-            host_value = float(host_time_match.group("value"))
-            host_unit = host_time_match.group("unit") or "s"
-            total_host_walltime_s = convert_time(host_value, host_unit, target="s")
-            continue
-
-        if ":" not in line:
-            continue
-
-        label, rest = line.split(":", 1)
-        label = label.strip()
-        rest = rest.strip()
-        if not label or not rest:
-            continue
-
-        metric_key = resolve_trtexec_label(label)
-        if metric_key is None:
-            continue
-
-        stats = parse_latency_stats(rest)
-        metrics[metric_key] = stats
-
-    dtype_value = None
-    if dtype_tokens:
-        # Deduplicate while preserving order of appearance
-        dtype_value = "/".join(dict.fromkeys(dtype_tokens))
-
-    return TrtexecParseResult(
-        throughput_qps=throughput_qps,
-        total_host_walltime_s=total_host_walltime_s,
-        metrics=metrics,
-        dtype=dtype_value,
-        tf32=tf32_status,
-        raw_output=output,
+    dtype_pattern = re.compile(r"dtype\s*[:=]\s*([A-Za-z0-9_]+)", re.IGNORECASE)
+    tf32_pattern = re.compile(r"TF32\s*[:=]\s*(on|off|enabled|disabled)", re.IGNORECASE)
+    throughput_pattern = re.compile(r"Throughput\s*[:=]\s*([0-9.+-eE]+)")
+    walltime_pattern = re.compile(r"Total\s+Host\s+Walltime[^0-9]*([0-9.+-eE]+)")
+    latency_header_pattern = re.compile(
+        r"Latency\s+min\s+max\s+mean\s+median\s+p90\s+p95\s+p99",
+        re.IGNORECASE,
     )
 
+    header_index: Optional[int] = None
+    for idx, line in enumerate(lines):
+        if dtype is None:
+            dtype_match = dtype_pattern.search(line)
+            if dtype_match:
+                dtype = dtype_match.group(1).lower()
+        if tf32 is None:
+            tf32_match = tf32_pattern.search(line)
+            if tf32_match:
+                tf32_value = tf32_match.group(1).lower()
+                tf32 = tf32_value in {"on", "enabled", "true"}
+        if throughput is None:
+            throughput_match = throughput_pattern.search(line)
+            if throughput_match:
+                throughput = float(throughput_match.group(1))
+        if walltime is None:
+            walltime_match = walltime_pattern.search(line)
+            if walltime_match:
+                walltime = float(walltime_match.group(1))
+        if header_index is None and latency_header_pattern.search(line):
+            header_index = idx
 
-def normalise_trtexec_line(line: str) -> str:
-    stripped = line.strip()
-    while stripped.startswith("["):
-        closing = stripped.find("]")
-        if closing == -1:
-            break
-        stripped = stripped[closing + 1 :].lstrip()
-    return stripped
-
-
-def resolve_trtexec_label(label: str) -> Optional[str]:
-    lowered = label.lower()
-    for prefix, metric in LABEL_TO_METRIC:
-        if lowered.startswith(prefix):
-            return metric
-    return None
-
-
-def parse_latency_stats(payload: str) -> Dict[str, float]:
-    stats = {name: float("nan") for name in STAT_NAMES}
-    parts = [part.strip() for part in payload.split(",") if part.strip()]
-    for part in parts:
-        if "=" not in part:
-            continue
-        key, value_text = part.split("=", 1)
-        key = key.strip().lower()
-        value = extract_number(value_text)
-        if value is None:
-            continue
-        unit = extract_unit(value_text)
-        value_ms = convert_time(value, unit or "ms", target="ms")
-
-        if key == "min":
-            stats["min"] = value_ms
-        elif key == "max":
-            stats["max"] = value_ms
-        elif key in {"mean", "avg", "average"}:
-            stats["mean"] = value_ms
-        elif key == "median":
-            stats["median"] = value_ms
-        elif key in {"p90", "p95", "p99"}:
-            stats[key] = value_ms
-        elif key.startswith("percentile"):
-            percentile = extract_percentile(key)
-            if percentile is None:
+    if header_index is not None:
+        for line in lines[header_index + 1 :]:
+            stripped = line.strip()
+            if not stripped:
+                break
+            if stripped.startswith("===") or stripped.startswith("---"):
+                break
+            parts = stripped.split()
+            if len(parts) < len(STAT_NAMES) + 1:
                 continue
-            if math.isclose(percentile, 90.0, rel_tol=1e-3, abs_tol=1e-3):
-                stats["p90"] = value_ms
-            elif math.isclose(percentile, 95.0, rel_tol=1e-3, abs_tol=1e-3):
-                stats["p95"] = value_ms
-            elif math.isclose(percentile, 99.0, rel_tol=1e-3, abs_tol=1e-3):
-                stats["p99"] = value_ms
-    return stats
+            key = parts[0].lower()
+            try:
+                values = [float(value) for value in parts[1 : len(STAT_NAMES) + 1]]
+            except ValueError:
+                continue
+            latencies[key] = dict(zip(STAT_NAMES, values))
+
+    if not latencies:
+        inline_pattern = re.compile(
+            r"([A-Za-z0-9_/]+)\s+latency\s*[:=]\s*min\s*=\s*([0-9.+-eE]+).*?max\s*=\s*([0-9.+-eE]+).*?"
+            r"mean\s*=\s*([0-9.+-eE]+).*?median\s*=\s*([0-9.+-eE]+).*?percentile\(90%\)\s*=\s*([0-9.+-eE]+).*?"
+            r"percentile\(95%\)\s*=\s*([0-9.+-eE]+).*?percentile\(99%\)\s*=\s*([0-9.+-eE]+)",
+            re.IGNORECASE,
+        )
+        for line in lines:
+            match = inline_pattern.search(line)
+            if not match:
+                continue
+            key = match.group(1).lower()
+            values = [float(match.group(i)) for i in range(2, 9)]
+            latencies[key] = dict(zip(STAT_NAMES, values))
+
+    return BenchmarkSummary(
+        label="TensorRT",
+        path="",
+        dtype=dtype,
+        tf32=tf32,
+        throughput_qps=throughput,
+        total_host_walltime_s=walltime,
+        latencies=latencies,
+    )
 
 
-def extract_number(text: str) -> Optional[float]:
-    match = re.search(r"[-+]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?", text)
-    if not match:
-        return None
-    try:
-        return float(match.group(0))
-    except ValueError:
-        return None
+def format_float(value: Optional[float], precision: int = 4) -> str:
+    if value is None or math.isnan(value):
+        return "n/a"
+    return f"{value:.{precision}f}"
 
 
-def extract_unit(text: str) -> Optional[str]:
-    match = re.search(r"(microseconds?|milliseconds?|ms|us|seconds?|sec|s)", text, re.IGNORECASE)
-    if not match:
-        return None
-    unit = match.group(1).lower()
-    if unit.startswith("micro"):
-        return "us"
-    if unit.startswith("milli"):
-        return "ms"
-    if unit.startswith("sec"):
-        return "s"
-    return unit
-
-
-def extract_percentile(text: str) -> Optional[float]:
-    match = re.search(r"(\d+(?:\.\d+)?)", text)
-    if not match:
-        return None
-    try:
-        return float(match.group(1))
-    except ValueError:
-        return None
-
-
-def extract_dtype_tokens(text: str) -> Sequence[str]:
-    tokens = []
-    # Split on common separators and strip TensorRT binding annotations (e.g. fp32:CHW)
-    for chunk in re.split(r"[\s,;/]+", text):
-        chunk = chunk.strip()
-        if not chunk:
-            continue
-        prefix = chunk.split(":", 1)[0].strip()
-        if not prefix:
-            continue
-        if re.match(r"^[a-z0-9]+$", prefix, re.IGNORECASE):
-            tokens.append(prefix.lower())
-    return tokens
-
-
-def resolve_tf32_from_line(line: str) -> Optional[bool]:
-    lowered = line.lower()
-    if "tf32" not in lowered:
-        return None
-    if any(keyword in lowered for keyword in ("disable", "disabled", "off", "not enable", "not support", "not avail")):
-        return False
-    if any(keyword in lowered for keyword in ("enable", "enabled", "on", "allow")):
-        return True
-    return None
-
-
-def convert_time(value: float, unit: str, target: str) -> float:
-    unit = (unit or "").lower()
-    conversion_to_seconds = {
-        "s": 1.0,
-        "sec": 1.0,
-        "second": 1.0,
-        "seconds": 1.0,
-        "ms": 1e-3,
-        "millisecond": 1e-3,
-        "milliseconds": 1e-3,
-        "us": 1e-6,
-        "microsecond": 1e-6,
-        "microseconds": 1e-6,
-    }
-    seconds = value * conversion_to_seconds.get(unit, 1.0)
-    if target == "s":
-        return seconds
-    if target == "ms":
-        return seconds * 1000.0
-    if target == "us":
-        return seconds * 1_000_000.0
-    return seconds
-
-
-def parse_tf32_option(option: Optional[str]) -> Optional[bool]:
-    if option is None:
-        return None
-    value = option.strip().lower()
-    if value == "on":
-        return True
-    if value == "off":
-        return False
-    return None
-
-
-def normalise_metrics(metrics: Mapping[str, Mapping[str, float]]) -> Dict[str, Dict[str, float]]:
-    normalised: Dict[str, Dict[str, float]] = {}
-    for metric in METRIC_NAMES:
-        stats = {name: float("nan") for name in STAT_NAMES}
-        if metrics and metric in metrics:
-            for key, value in metrics[metric].items():
-                if key in stats and value is not None:
-                    stats[key] = float(value)
-        normalised[metric] = stats
-    return normalised
-
-
-def format_dtype(dtype: Optional[str]) -> str:
-    if dtype is None:
-        return "Unknown"
-    dtype_text = str(dtype).strip()
-    return dtype_text or "Unknown"
-
-
-def format_tf32(tf32: Optional[bool]) -> str:
-    if tf32 is None:
-        return "Unknown"
-    return "On" if tf32 else "Off"
-
-
-def format_table_value(value: float) -> str:
-    if value is None or (isinstance(value, float) and math.isnan(value)):
-        return "nan"
+def format_ratio(value: Optional[float]) -> str:
+    if value is None or math.isnan(value):
+        return "n/a"
     return f"{value:.4f}"
 
 
-def format_csv_value(value: float) -> str:
-    if value is None or (isinstance(value, float) and math.isnan(value)):
+def get_latency(summary: BenchmarkSummary, component: str, stat: str) -> Optional[float]:
+    component_stats = summary.latencies.get(component)
+    if component_stats is None:
+        return None
+    value = component_stats.get(stat)
+    return float(value) if value is not None else None
+
+
+def build_comparison_rows(pt_summary: BenchmarkSummary, engine_summary: BenchmarkSummary) -> List[ComparisonRow]:
+    rows: List[ComparisonRow] = []
+
+    rows.append(make_comparison_row("summary", "throughput_qps", pt_summary.throughput_qps, engine_summary.throughput_qps))
+    rows.append(
+        make_comparison_row(
+            "summary",
+            "total_host_walltime_s",
+            pt_summary.total_host_walltime_s,
+            engine_summary.total_host_walltime_s,
+        )
+    )
+
+    components = sorted(set(pt_summary.latencies.keys()) | set(engine_summary.latencies.keys()))
+    for component in components:
+        for stat in STAT_NAMES:
+            rows.append(
+                make_comparison_row(
+                    "latency",
+                    f"{component}.{stat}",
+                    get_latency(pt_summary, component, stat),
+                    get_latency(engine_summary, component, stat),
+                )
+            )
+
+    return rows
+
+
+def make_comparison_row(
+    category: str,
+    metric: str,
+    pt_value: Optional[float],
+    engine_value: Optional[float],
+) -> ComparisonRow:
+    delta: Optional[float] = None
+    ratio: Optional[float] = None
+
+    if pt_value is not None and engine_value is not None:
+        if not math.isnan(pt_value) and not math.isnan(engine_value):
+            delta = engine_value - pt_value
+            if pt_value != 0.0:
+                ratio = engine_value / pt_value
+
+    return ComparisonRow(category, metric, pt_value, engine_value, delta, ratio)
+
+
+def write_comparison_csv(output_path: Path, rows: Iterable[ComparisonRow]) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["category", "metric", "pt_value", "engine_value", "delta", "ratio"])
+        for row in rows:
+            writer.writerow(
+                [
+                    row.category,
+                    row.metric,
+                    format_csv_value(row.pt_value),
+                    format_csv_value(row.engine_value),
+                    format_csv_value(row.delta),
+                    format_csv_value(row.ratio),
+                ]
+            )
+
+
+def format_csv_value(value: Optional[float]) -> str:
+    if value is None or math.isnan(value):
         return ""
     return f"{value:.6f}"
 
 
-def format_csv_text(value: Optional[str]) -> str:
-    if value is None:
-        return ""
-    return str(value)
+def sanitize_name(name: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", name)
 
 
-def format_ratio(value: float) -> str:
-    if value is None or (isinstance(value, float) and math.isnan(value)):
-        return "nan"
-    return f"{value:.4f}x"
+def build_output_path(output_dir: Path, pt_path: str, engine_path: str) -> Path:
+    pt_name = sanitize_name(Path(pt_path).stem)
+    engine_name = sanitize_name(Path(engine_path).stem)
+    filename = f"{pt_name}__vs__{engine_name}.csv"
+    return output_dir / filename
 
 
-def safe_difference(a: float, b: float) -> float:
-    try:
-        fa = float(a)
-        fb = float(b)
-    except (TypeError, ValueError):
-        return float("nan")
-    if math.isnan(fa) or math.isnan(fb):
-        return float("nan")
-    return fa - fb
-
-
-def safe_ratio(numerator: float, denominator: float) -> float:
-    try:
-        num = float(numerator)
-        den = float(denominator)
-    except (TypeError, ValueError):
-        return float("nan")
-    if math.isnan(num) or math.isnan(den) or math.isclose(den, 0.0, rel_tol=1e-12, abs_tol=1e-12):
-        return float("nan")
-    return num / den
-
-
-def print_summary(summary: ModelSummary) -> None:
-    print(summary.title)
-    print("-" * len(summary.title))
+def print_benchmark_summary(summary: BenchmarkSummary) -> None:
+    print(summary.label)
+    print("-" * len(summary.label))
     print(f"Path: {summary.path}")
-    print(f"Dtype: {format_dtype(summary.dtype)}")
-    print(f"TF32: {format_tf32(summary.tf32)}")
+    if summary.input_spec:
+        print(f"Input: {summary.input_spec}")
+    if summary.dtype:
+        print(f"Dtype: {summary.dtype}")
+    if summary.tf32 is not None:
+        print(f"TF32: {'On' if summary.tf32 else 'Off'}")
     print()
     print("Performance summary")
     print("-------------------")
-    print(f"Throughput (qps): {summary.throughput_qps:.4f}")
-    if summary.total_host_walltime_s is None or math.isnan(summary.total_host_walltime_s):
-        print("Total Host Walltime (s): N/A")
-    else:
-        print(f"Total Host Walltime (s): {summary.total_host_walltime_s:.6f}")
+    print(f"Throughput (qps): {format_float(summary.throughput_qps, precision=4)}")
+    print(f"Total Host Walltime (s): {format_float(summary.total_host_walltime_s, precision=6)}")
     print()
-    print("Latency breakdown (ms)")
-    print("----------------------")
-    headers = ("Latency", "min", "max", "mean", "median", "p90", "p95", "p99")
-    row_format = "{:<10} " + " ".join(["{:>10}"] * (len(headers) - 1))
-    print(row_format.format(*headers))
-    for metric in METRIC_NAMES:
-        stats = summary.metrics.get(metric, {})
-        row = [metric]
-        for key in STAT_NAMES:
-            row.append(format_table_value(stats.get(key, float("nan"))))
-        print(row_format.format(*row))
+    if summary.latencies:
+        print("Latency breakdown (ms)")
+        print("----------------------")
+        header = ("Latency",) + STAT_NAMES
+        row_format = "{:<10} " + " ".join(["{:>10}"] * len(STAT_NAMES))
+        print(row_format.format(*header))
+        for key in sorted(summary.latencies.keys()):
+            stats = summary.latencies[key]
+            values = [format_float(stats.get(stat), precision=4) for stat in STAT_NAMES]
+            print(row_format.format(key, *values))
     print()
 
 
-def print_comparison(pt_summary: ModelSummary, engine_summary: ModelSummary) -> None:
-    print("Comparison summary (engine - pt)")
-    print("--------------------------------")
-    throughput_delta = safe_difference(engine_summary.throughput_qps, pt_summary.throughput_qps)
-    throughput_ratio = safe_ratio(engine_summary.throughput_qps, pt_summary.throughput_qps)
-    print(f"Throughput delta (qps): {format_table_value(throughput_delta)}")
-    print(f"Throughput ratio (engine/pt): {format_ratio(throughput_ratio)}")
-    host_delta = safe_difference(
-        engine_summary.total_host_walltime_s, pt_summary.total_host_walltime_s
-    )
-    print(f"Total Host Walltime delta (s): {format_table_value(host_delta)}")
-    host_ratio = safe_ratio(
-        engine_summary.total_host_walltime_s, pt_summary.total_host_walltime_s
-    )
-    print(f"Total Host Walltime ratio (engine/pt): {format_ratio(host_ratio)}")
-    print()
+def print_comparison_table(rows: List[ComparisonRow]) -> None:
+    summary_rows = [row for row in rows if row.category == "summary"]
+    latency_rows = [row for row in rows if row.category == "latency"]
 
-    print("Latency delta (ms)")
-    print("------------------")
-    headers = ("Latency", "min", "max", "mean", "median", "p90", "p95", "p99")
-    row_format = "{:<10} " + " ".join(["{:>10}"] * (len(headers) - 1))
-    print(row_format.format(*headers))
-    for metric in METRIC_NAMES:
-        row = [metric]
-        for key in STAT_NAMES:
-            pt_value = pt_summary.metrics.get(metric, {}).get(key, float("nan"))
-            engine_value = engine_summary.metrics.get(metric, {}).get(key, float("nan"))
-            diff = safe_difference(engine_value, pt_value)
-            row.append(format_table_value(diff))
-        print(row_format.format(*row))
-    print()
-
-    print("Latency ratio (engine/pt)")
-    print("-------------------------")
-    print(row_format.format(*headers))
-    for metric in METRIC_NAMES:
-        row = [metric]
-        for key in STAT_NAMES:
-            pt_value = pt_summary.metrics.get(metric, {}).get(key, float("nan"))
-            engine_value = engine_summary.metrics.get(metric, {}).get(key, float("nan"))
-            ratio = safe_ratio(engine_value, pt_value)
-            row.append(format_ratio(ratio))
-        print(row_format.format(*row))
-    print()
-
-
-def write_compare_csv(
-    pt_summary: ModelSummary,
-    engine_summary: ModelSummary,
-    output_dir: Path,
-    output_name: str,
-) -> Path:
-    output_dir.mkdir(parents=True, exist_ok=True)
-    csv_path = output_dir / output_name
-
-    with csv_path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(
-            ["metric", "pt", "engine", "engine_minus_pt", "engine_over_pt_ratio"]
-        )
-        writer.writerow(
-            [
-                "dtype",
-                format_csv_text(pt_summary.dtype),
-                format_csv_text(engine_summary.dtype),
-                "",
-                "",
-            ]
-        )
-        writer.writerow(
-            [
-                "tf32",
-                format_tf32(pt_summary.tf32),
-                format_tf32(engine_summary.tf32),
-                "",
-                "",
-            ]
-        )
-        writer.writerow(
-            [
-                "throughput_qps",
-                format_csv_value(pt_summary.throughput_qps),
-                format_csv_value(engine_summary.throughput_qps),
-                format_csv_value(
-                    safe_difference(
-                        engine_summary.throughput_qps, pt_summary.throughput_qps
-                    )
-                ),
-                format_csv_value(
-                    safe_ratio(engine_summary.throughput_qps, pt_summary.throughput_qps)
-                ),
-            ]
-        )
-        writer.writerow(
-            [
-                "total_host_walltime_s",
-                format_csv_value(pt_summary.total_host_walltime_s),
-                format_csv_value(engine_summary.total_host_walltime_s),
-                format_csv_value(
-                    safe_difference(
-                        engine_summary.total_host_walltime_s,
-                        pt_summary.total_host_walltime_s,
-                    )
-                ),
-                format_csv_value(
-                    safe_ratio(
-                        engine_summary.total_host_walltime_s,
-                        pt_summary.total_host_walltime_s,
-                    )
-                ),
-            ]
+    print("Comparison (TensorRT vs PyTorch)")
+    print("-------------------------------")
+    header = ("Metric", "PyTorch", "TensorRT", "Delta", "Ratio")
+    row_format = "{:<28} " + " ".join(["{:>12}"] * (len(header) - 1))
+    print(row_format.format(*header))
+    for row in summary_rows:
+        pretty_metric = {
+            "throughput_qps": "Throughput (qps)",
+            "total_host_walltime_s": "Total Host Walltime (s)",
+        }.get(row.metric, row.metric)
+        print(
+            row_format.format(
+                pretty_metric,
+                format_float(row.pt_value, precision=4),
+                format_float(row.engine_value, precision=4),
+                format_float(row.delta, precision=4),
+                format_ratio(row.ratio),
+            )
         )
 
-        for metric in METRIC_NAMES:
-            for key in STAT_NAMES:
-                pt_value = pt_summary.metrics.get(metric, {}).get(key, float("nan"))
-                engine_value = engine_summary.metrics.get(metric, {}).get(key, float("nan"))
-                diff = safe_difference(engine_value, pt_value)
-                writer.writerow(
-                    [
-                        f"{metric}_{key}",
-                        format_csv_value(pt_value),
-                        format_csv_value(engine_value),
-                        format_csv_value(diff),
-                        format_csv_value(safe_ratio(engine_value, pt_value)),
-                    ]
+    if latency_rows:
+        print()
+        print("Latency deltas (TensorRT - PyTorch)")
+        print("-----------------------------------")
+        print(row_format.format(*header))
+        for row in latency_rows:
+            print(
+                row_format.format(
+                    row.metric,
+                    format_float(row.pt_value, precision=4),
+                    format_float(row.engine_value, precision=4),
+                    format_float(row.delta, precision=4),
+                    format_ratio(row.ratio),
                 )
-
-    return csv_path
-
-
-def derive_output_name(pt_path: Path, engine_path: Path) -> str:
-    pt_name = sanitise_filename(pt_path.stem or "pt_model")
-    engine_name = sanitise_filename(engine_path.stem or "engine")
-    return f"{pt_name}_vs_{engine_name}.csv"
-
-
-def sanitise_filename(name: str) -> str:
-    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", name)
-    cleaned = cleaned.strip("._")
-    return cleaned or "model"
+            )
 
 
 def main(argv: Optional[Sequence[str]] = None) -> None:
     args = parse_args(argv)
 
-    pt_summary = run_pt_evaluation(args)
-    print_summary(pt_summary)
+    shapes = args.shapes or f"images:{args.batch}x{args.ch}x{args.imgsz}x{args.imgsz}"
 
-    engine_summary = run_trtexec_evaluation(args)
-    print_summary(engine_summary)
-    print_comparison(pt_summary, engine_summary)
+    print("Running PyTorch benchmark...")
+    pt_summary = run_pt_benchmark(args)
+    print()
+    print_benchmark_summary(pt_summary)
 
-    output_name = args.output_name or derive_output_name(Path(args.pt), Path(args.engine))
-    csv_path = write_compare_csv(pt_summary, engine_summary, args.output_dir, output_name)
-    print(f"Comparison CSV written to: {csv_path}")
+    print("Running TensorRT benchmark...")
+    engine_summary, _ = run_trtexec(args, shapes)
+    print()
+    print_benchmark_summary(engine_summary)
+
+    rows = build_comparison_rows(pt_summary, engine_summary)
+    print_comparison_table(rows)
+
+    output_path = build_output_path(args.output_dir, args.pt, args.engine)
+    write_comparison_csv(output_path, rows)
+    print()
+    print(f"Comparison CSV written to: {output_path}")
 
 
 if __name__ == "__main__":
