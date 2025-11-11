@@ -1,0 +1,21 @@
+# image
+*.png
+*.jpg
+*.jpeg
+*.bmp
+*.gif
+
+# label
+*.txt
+*.json
+
+# models
+*.pt
+*.onnx
+
+# logs
+*.csv
+*.log
+
+# ultralytics
+ultralytics
