@@ -10,6 +10,7 @@ input frame. Annotated results can optionally be saved or displayed.
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 from typing import Iterator, Tuple
 
@@ -243,6 +244,10 @@ def main() -> None:
         if args.save:
             save_dir.mkdir(parents=True, exist_ok=True)
 
+        show_ok = args.show and bool(os.environ.get("DISPLAY"))
+        if args.show and not show_ok:
+            print("[WARN] --show requested but DISPLAY is not available; disabling window output.")
+
         for frame, name in frames_from_source(args.source):
             im, boxes, kpts = infer(engine, context, trt_module, frame, c_dim,
                                     args.imgsz, args.conf, args.iou, args.nkpt, args.nc)
@@ -250,9 +255,13 @@ def main() -> None:
             print("Keypoints (xy):", kpts[..., :2].tolist())
             if args.save and name is not None:
                 cv2.imwrite(str(save_dir / name), im)
-            if args.show:
-                cv2.imshow("result", im)
-                cv2.waitKey(1)
+            if show_ok:
+                try:
+                    cv2.imshow("result", im)
+                    cv2.waitKey(1)
+                except Exception as exc:  # pragma: no cover - GUI dependent
+                    print(f"[WARN] Failed to display window ({exc}); disabling --show output.")
+                    show_ok = False
     finally:
         ctx.pop()
         ctx.detach()
