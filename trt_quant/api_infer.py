@@ -61,3 +61,6 @@ class PoseTRTInfer:
             verbose=verbose,
         )
         return results
+
+    def close(self) -> None:
+        self.runner.close()

@@ -52,6 +52,11 @@ class TrtRunner:
 
     def close(self) -> None:
         if getattr(self, "_context", None) is not None:
+            if getattr(self, "stream", None) is not None:
+                try:
+                    self.stream.synchronize()
+                except Exception:
+                    pass
             self._context.pop()
             self._context.detach()
             self._context = None

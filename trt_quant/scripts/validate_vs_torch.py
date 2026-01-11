@@ -124,29 +124,32 @@ def main() -> None:
         nkpt=args.nkpt,
         device_index=args.device,
     )
-    trt_results = trt_infer.infer_3in3out(frames3)
+    try:
+        trt_results = trt_infer.infer_3in3out(frames3)
 
-    for idx, (pt_res, trt_res) in enumerate(zip(pt_results, trt_results)):
-        pt_boxes = pt_res.boxes.xyxy.cpu().numpy() if pt_res.boxes is not None else np.zeros((0, 4))
-        trt_boxes = trt_res.boxes.xyxy.cpu().numpy() if trt_res.boxes is not None else np.zeros((0, 4))
-        pt_kpts = pt_res.keypoints.xy.cpu().numpy() if pt_res.keypoints is not None else np.zeros((0, args.nkpt, 2))
-        trt_kpts = trt_res.keypoints.xy.cpu().numpy() if trt_res.keypoints is not None else np.zeros((0, args.nkpt, 2))
-        pt_conf = pt_res.boxes.conf.cpu().numpy() if pt_res.boxes is not None else np.zeros((0,))
-        trt_conf = trt_res.boxes.conf.cpu().numpy() if trt_res.boxes is not None else np.zeros((0,))
+        for idx, (pt_res, trt_res) in enumerate(zip(pt_results, trt_results)):
+            pt_boxes = pt_res.boxes.xyxy.cpu().numpy() if pt_res.boxes is not None else np.zeros((0, 4))
+            trt_boxes = trt_res.boxes.xyxy.cpu().numpy() if trt_res.boxes is not None else np.zeros((0, 4))
+            pt_kpts = pt_res.keypoints.xy.cpu().numpy() if pt_res.keypoints is not None else np.zeros((0, args.nkpt, 2))
+            trt_kpts = trt_res.keypoints.xy.cpu().numpy() if trt_res.keypoints is not None else np.zeros((0, args.nkpt, 2))
+            pt_conf = pt_res.boxes.conf.cpu().numpy() if pt_res.boxes is not None else np.zeros((0,))
+            trt_conf = trt_res.boxes.conf.cpu().numpy() if trt_res.boxes is not None else np.zeros((0,))
 
-        pairs = match_by_iou(pt_boxes, trt_boxes)
-        if pairs:
-            pt_kpts_m = np.stack([pt_kpts[i] for i, _ in pairs], axis=0)
-            trt_kpts_m = np.stack([trt_kpts[j] for _, j in pairs], axis=0)
-            kpt_mae = mean_abs_error(pt_kpts_m, trt_kpts_m)
-        else:
-            kpt_mae = float("nan")
+            pairs = match_by_iou(pt_boxes, trt_boxes)
+            if pairs:
+                pt_kpts_m = np.stack([pt_kpts[i] for i, _ in pairs], axis=0)
+                trt_kpts_m = np.stack([trt_kpts[j] for _, j in pairs], axis=0)
+                kpt_mae = mean_abs_error(pt_kpts_m, trt_kpts_m)
+            else:
+                kpt_mae = float("nan")
 
-        conf_diff = mean_abs_error(pt_conf, trt_conf) if pt_conf.size and trt_conf.size else float("nan")
+            conf_diff = mean_abs_error(pt_conf, trt_conf) if pt_conf.size and trt_conf.size else float("nan")
 
-        print(f"[frame {idx}] pt_boxes={len(pt_boxes)} trt_boxes={len(trt_boxes)}")
-        print(f"  matched_pairs={len(pairs)} kpt_mae={kpt_mae:.4f}")
-        print(f"  conf_mean_abs_diff={conf_diff:.4f}")
+            print(f"[frame {idx}] pt_boxes={len(pt_boxes)} trt_boxes={len(trt_boxes)}")
+            print(f"  matched_pairs={len(pairs)} kpt_mae={kpt_mae:.4f}")
+            print(f"  conf_mean_abs_diff={conf_diff:.4f}")
+    finally:
+        trt_infer.close()
 
 
 if __name__ == "__main__":

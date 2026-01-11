@@ -82,22 +82,25 @@ def main() -> None:
         nkpt=args.nkpt,
         device_index=args.device,
     )
-    results = infer.infer_3in3out(frames3, verbose=True)
+    try:
+        results = infer.infer_3in3out(frames3, verbose=True)
 
-    print(f"len(results) = {len(results)}")
-    for idx, result in enumerate(results):
-        orig_shape = getattr(result, "orig_shape", None) or result.orig_img.shape[:2]
-        boxes = result.boxes
-        kpts = result.keypoints
-        num_boxes = len(boxes) if boxes is not None else 0
-        num_kpts = len(kpts) if kpts is not None else 0
-        print(f"[{idx}] orig_shape={tuple(orig_shape)}, boxes={num_boxes}, kpt_instances={num_kpts}")
-        if kpts is not None:
-            kpt_xy = kpts.xy
-            kpt_conf = getattr(kpts, "conf", None)
-            print(f"keypoints.xy shape: {tuple(kpt_xy.shape)}")
-            if kpt_conf is not None:
-                print(f"keypoints.conf shape: {tuple(kpt_conf.shape)}")
+        print(f"len(results) = {len(results)}")
+        for idx, result in enumerate(results):
+            orig_shape = getattr(result, "orig_shape", None) or result.orig_img.shape[:2]
+            boxes = result.boxes
+            kpts = result.keypoints
+            num_boxes = len(boxes) if boxes is not None else 0
+            num_kpts = len(kpts) if kpts is not None else 0
+            print(f"[{idx}] orig_shape={tuple(orig_shape)}, boxes={num_boxes}, kpt_instances={num_kpts}")
+            if kpts is not None:
+                kpt_xy = kpts.xy
+                kpt_conf = getattr(kpts, "conf", None)
+                print(f"keypoints.xy shape: {tuple(kpt_xy.shape)}")
+                if kpt_conf is not None:
+                    print(f"keypoints.conf shape: {tuple(kpt_conf.shape)}")
+    finally:
+        infer.close()
 
 
 if __name__ == "__main__":
