@@ -38,7 +38,17 @@ class PoseTRTInfer:
         self.names = names
 
     def infer_3in3out(self, frames3: Sequence[np.ndarray], verbose: bool = False) -> List:
-        x, metas = preprocess_3(frames3, self.imgsz, to_gray=self.to_gray, letterbox=self.letterbox)
+        to_gray = self.to_gray
+        expected_c = self.runner.input_channels()
+        if expected_c == 1 and not to_gray:
+            if verbose:
+                print("[PoseTRTInfer] engine expects 1 channel; enabling grayscale preprocessing")
+            to_gray = True
+        elif expected_c == 3 and to_gray:
+            if verbose:
+                print("[PoseTRTInfer] engine expects 3 channels; disabling grayscale preprocessing")
+            to_gray = False
+        x, metas = preprocess_3(frames3, self.imgsz, to_gray=to_gray, letterbox=self.letterbox)
         outputs = self.runner.infer(x, verbose=verbose)
         results = postprocess_batch(
             outputs,

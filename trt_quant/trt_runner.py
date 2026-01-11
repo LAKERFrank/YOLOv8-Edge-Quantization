@@ -77,6 +77,16 @@ class TrtRunner:
                 bindings.append(BindingInfo(idx, name, is_input, dtype, shape))
         return bindings
 
+    @property
+    def input_binding(self) -> BindingInfo:
+        return next(b for b in self._bindings if b.is_input)
+
+    def input_channels(self) -> int | None:
+        shape = self.input_binding.shape
+        if len(shape) >= 2 and shape[1] not in (-1, 0):
+            return int(shape[1])
+        return None
+
     def dump_bindings(self) -> None:
         print("[TrtRunner] Bindings:")
         for binding in self._bindings:
@@ -108,7 +118,7 @@ class TrtRunner:
         if not x.flags["C_CONTIGUOUS"]:
             raise AssertionError("input must be C_CONTIGUOUS")
 
-        input_binding = next(b for b in self._bindings if b.is_input)
+        input_binding = self.input_binding
         if self._use_binding_api:
             self.context.set_binding_shape(input_binding.index, x.shape)
         else:
