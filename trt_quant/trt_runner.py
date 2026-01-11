@@ -57,6 +57,7 @@ class TrtRunner:
                     self.stream.synchronize()
                 except Exception:
                     pass
+                self.stream = None
             self._device_buffers.clear()
             self._host_buffers.clear()
             self._context.pop()
