@@ -28,6 +28,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--iou", type=float, default=0.45)
     ap.add_argument("--to-gray", action="store_true")
     ap.add_argument("--nkpt", type=int, default=17)
+    ap.add_argument("--device", type=int, default=0, help="CUDA device index")
     return ap.parse_args()
 
 
@@ -121,6 +122,7 @@ def main() -> None:
         iou=args.iou,
         to_gray=args.to_gray,
         nkpt=args.nkpt,
+        device_index=args.device,
     )
     trt_results = trt_infer.infer_3in3out(frames3)
 

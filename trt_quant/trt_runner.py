@@ -26,12 +26,16 @@ class BindingInfo:
 class TrtRunner:
     """TensorRT runtime wrapper for dynamic batch inference."""
 
-    def __init__(self, engine_path: str, profile_index: int = 0) -> None:
+    def __init__(self, engine_path: str, profile_index: int = 0, device_index: int = 0) -> None:
         if trt is None or cuda is None:
             raise ImportError("TensorRT and PyCUDA are required for TrtRunner")
         self.engine_path = engine_path
         self.profile_index = profile_index
+        self.device_index = device_index
         self.logger = trt.Logger(trt.Logger.ERROR)
+        cuda.init()
+        self._device = cuda.Device(device_index)
+        self._context = self._device.make_context()
         with open(engine_path, "rb") as f, trt.Runtime(self.logger) as runtime:
             self.engine = runtime.deserialize_cuda_engine(f.read())
         self.context = self.engine.create_execution_context()
@@ -45,6 +49,15 @@ class TrtRunner:
 
         if hasattr(self.context, "set_optimization_profile_async"):
             self.context.set_optimization_profile_async(profile_index, self.stream.handle)
+
+    def close(self) -> None:
+        if getattr(self, "_context", None) is not None:
+            self._context.pop()
+            self._context.detach()
+            self._context = None
+
+    def __del__(self) -> None:
+        self.close()
 
     def _scan_bindings(self) -> List[BindingInfo]:
         bindings: List[BindingInfo] = []

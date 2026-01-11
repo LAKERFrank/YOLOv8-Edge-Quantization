@@ -22,11 +22,12 @@ class PoseTRTInfer:
         to_gray: bool = False,
         letterbox: bool = True,
         profile_index: int = 0,
+        device_index: int = 0,
         nc: int = 1,
         nkpt: int = 17,
         names: dict[int, str] | None = None,
     ) -> None:
-        self.runner = TrtRunner(engine_path, profile_index=profile_index)
+        self.runner = TrtRunner(engine_path, profile_index=profile_index, device_index=device_index)
         self.imgsz = imgsz
         self.conf = conf
         self.iou = iou
