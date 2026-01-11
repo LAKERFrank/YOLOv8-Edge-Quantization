@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 from typing import List
 
 import numpy as np
 
-from trt_quant.api_infer import PoseTRTInfer
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.append(str(ROOT))
+
+from trt_quant.api_infer import PoseTRTInfer  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:

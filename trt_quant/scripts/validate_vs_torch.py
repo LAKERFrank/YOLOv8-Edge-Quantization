@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 from typing import List, Tuple
 
 import numpy as np
 from ultralytics import YOLO
 
-from trt_quant.api_infer import PoseTRTInfer
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.append(str(ROOT))
+
+from trt_quant.api_infer import PoseTRTInfer  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
