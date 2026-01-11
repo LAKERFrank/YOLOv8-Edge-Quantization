@@ -153,7 +153,10 @@ class TrtRunner:
             self._ensure_buffers(binding.index, out_shape, binding.dtype)
             bindings_ptrs[binding.index] = int(self._device_buffers[binding.index])
 
-        if hasattr(self.context, "execute_async_v3"):
+        if hasattr(self.context, "execute_async_v3") and not self._use_binding_api:
+            for binding in self._bindings:
+                ptr = self._device_buffers[binding.index]
+                self.context.set_tensor_address(binding.name, int(ptr))
             self.context.execute_async_v3(self.stream.handle)
         else:
             self.context.execute_async_v2(bindings_ptrs, self.stream.handle)
