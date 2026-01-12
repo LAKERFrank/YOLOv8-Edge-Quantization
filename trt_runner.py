@@ -149,7 +149,12 @@ class TrtRunner:
                             f"[TrtRunner] output {binding.name}: "
                             "transpose may be required based on shape"
                         )
-        self.context.execute_async_v2(bindings=bindings_ptrs, stream_handle=self.stream.handle)
+        if hasattr(self.context, "execute_async_v3"):
+            for binding in self.bindings:
+                self.context.set_tensor_address(binding.name, int(self._device_buffers[binding.index]))
+            self.context.execute_async_v3(stream_handle=self.stream.handle)
+        else:
+            self.context.execute_async_v2(bindings=bindings_ptrs, stream_handle=self.stream.handle)
         for binding in self.bindings:
             if binding.is_input:
                 continue
