@@ -79,6 +79,16 @@ class TrtRunner:
             return self.engine.num_bindings
         return self.engine.num_io_tensors
 
+    def get_input_channel_count(self) -> int | None:
+        input_binding = next(b for b in self.bindings if b.is_input)
+        if hasattr(self.engine, "get_binding_shape"):
+            shape = tuple(self.engine.get_binding_shape(input_binding.index))
+        else:
+            shape = tuple(self.engine.get_tensor_shape(input_binding.name))
+        if len(shape) >= 2:
+            return shape[1]
+        return None
+
     def dump_bindings(self) -> None:
         print("[TrtRunner] Bindings (engine shapes):")
         for binding in self.bindings:
