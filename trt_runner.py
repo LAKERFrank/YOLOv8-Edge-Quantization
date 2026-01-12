@@ -42,19 +42,50 @@ class TrtRunner:
                 except AttributeError:
                     pass
         self.bindings: List[BindingInfo] = []
-        for idx in range(self.engine.num_bindings):
-            name = self.engine.get_binding_name(idx)
-            is_input = self.engine.binding_is_input(idx)
-            dtype = trt.nptype(self.engine.get_binding_dtype(idx))
+        for idx, name, is_input, dtype in self._iter_bindings():
             self.bindings.append(BindingInfo(idx, name, is_input, dtype))
         self._host_buffers: Dict[int, np.ndarray] = {}
         self._device_buffers: Dict[int, cuda.DeviceAllocation] = {}
         self._buffer_sizes: Dict[int, int] = {}
 
+    def _iter_bindings(self):
+        if hasattr(self.engine, "num_bindings"):
+            for idx in range(self.engine.num_bindings):
+                name = self.engine.get_binding_name(idx)
+                is_input = self.engine.binding_is_input(idx)
+                dtype = trt.nptype(self.engine.get_binding_dtype(idx))
+                yield idx, name, is_input, dtype
+        else:
+            for idx in range(self.engine.num_io_tensors):
+                name = self.engine.get_tensor_name(idx)
+                mode = self.engine.get_tensor_mode(name)
+                is_input = mode == trt.TensorIOMode.INPUT
+                dtype = trt.nptype(self.engine.get_tensor_dtype(name))
+                yield idx, name, is_input, dtype
+
+    def _get_binding_shape(self, binding_index: int, binding_name: str) -> Tuple[int, ...]:
+        if hasattr(self.context, "get_binding_shape"):
+            return tuple(self.context.get_binding_shape(binding_index))
+        return tuple(self.context.get_tensor_shape(binding_name))
+
+    def _set_binding_shape(self, binding_index: int, binding_name: str, shape: Tuple[int, ...]) -> None:
+        if hasattr(self.context, "set_binding_shape"):
+            self.context.set_binding_shape(binding_index, shape)
+        else:
+            self.context.set_input_shape(binding_name, shape)
+
+    def _get_num_bindings(self) -> int:
+        if hasattr(self.engine, "num_bindings"):
+            return self.engine.num_bindings
+        return self.engine.num_io_tensors
+
     def dump_bindings(self) -> None:
         print("[TrtRunner] Bindings (engine shapes):")
         for binding in self.bindings:
-            engine_shape = self.engine.get_binding_shape(binding.index)
+            if hasattr(self.engine, "get_binding_shape"):
+                engine_shape = self.engine.get_binding_shape(binding.index)
+            else:
+                engine_shape = self.engine.get_tensor_shape(binding.name)
             print(
                 f"  - {binding.name}: is_input={binding.is_input}, "
                 f"dtype={binding.dtype}, shape={engine_shape}"
@@ -62,7 +93,7 @@ class TrtRunner:
         if self.context is not None:
             print("[TrtRunner] Bindings (context shapes):")
             for binding in self.bindings:
-                ctx_shape = self.context.get_binding_shape(binding.index)
+                ctx_shape = self._get_binding_shape(binding.index, binding.name)
                 print(
                     f"  - {binding.name}: is_input={binding.is_input}, "
                     f"dtype={binding.dtype}, shape={ctx_shape}"
@@ -83,14 +114,14 @@ class TrtRunner:
         assert x.dtype == np.float32, "input dtype must be float32"
         assert x.flags["C_CONTIGUOUS"], "input must be C_CONTIGUOUS"
         input_binding = next(b for b in self.bindings if b.is_input)
-        self.context.set_binding_shape(input_binding.index, x.shape)
+        self._set_binding_shape(input_binding.index, input_binding.name, x.shape)
         assert self.context.all_binding_shapes_specified
         if verbose:
             print(f"[TrtRunner] input shape: {x.shape}")
         outputs: Dict[str, np.ndarray] = {}
-        bindings_ptrs: List[int] = [0] * self.engine.num_bindings
+        bindings_ptrs: List[int] = [0] * self._get_num_bindings()
         for binding in self.bindings:
-            binding_shape = tuple(self.context.get_binding_shape(binding.index))
+            binding_shape = self._get_binding_shape(binding.index, binding.name)
             self._allocate_if_needed(binding, binding_shape)
             bindings_ptrs[binding.index] = int(self._device_buffers[binding.index])
             if binding.is_input:
@@ -112,7 +143,7 @@ class TrtRunner:
         for binding in self.bindings:
             if binding.is_input:
                 continue
-            binding_shape = tuple(self.context.get_binding_shape(binding.index))
+            binding_shape = self._get_binding_shape(binding.index, binding.name)
             size = int(np.prod(binding_shape))
             cuda.memcpy_dtoh_async(
                 self._host_buffers[binding.index][:size],
@@ -123,7 +154,7 @@ class TrtRunner:
         for binding in self.bindings:
             if binding.is_input:
                 continue
-            binding_shape = tuple(self.context.get_binding_shape(binding.index))
+            binding_shape = self._get_binding_shape(binding.index, binding.name)
             size = int(np.prod(binding_shape))
             host_buf = self._host_buffers[binding.index][:size]
             outputs[binding.name] = host_buf.reshape(binding_shape).copy()
