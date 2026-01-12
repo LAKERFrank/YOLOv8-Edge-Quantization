@@ -74,4 +74,5 @@ def preprocess_3(
             }
         )
     x = np.stack(processed, axis=0).astype(np.float32)
+    x = np.ascontiguousarray(x)
     return x, metas
