@@ -1,178 +1,299 @@
-import argparse
-from pathlib import Path
-from typing import List, Sequence, Tuple
+#!/usr/bin/env python3
+"""Run TensorRT pose inference without the Ultralytics pipeline.
 
-import cv2
+This script loads a TensorRT engine, performs preprocessing (including
+automatic grayscale conversion for single-channel engines), executes
+the model on the GPU, and prints bounding boxes and keypoints for each
+input frame. Annotated results can optionally be saved or displayed.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+from pathlib import Path
+from typing import Iterator, Tuple
+
 import numpy as np
 
-from api_infer import PoseTRTInfer
+
+def parse_args() -> argparse.Namespace:
+    ap = argparse.ArgumentParser(description="TensorRT pose inference")
+    ap.add_argument("--engine", required=True, help="path to TensorRT .engine file")
+    ap.add_argument("--source", required=True, help="image/video path or directory")
+    ap.add_argument("--imgsz", type=int, default=640, help="inference size")
+    ap.add_argument("--conf", type=float, default=0.25, help="confidence threshold")
+    ap.add_argument("--iou", type=float, default=0.45, help="NMS IoU threshold")
+    ap.add_argument("--device", type=int, default=0, help="CUDA device index")
+    ap.add_argument("--save", action="store_true", help="save annotated outputs")
+    ap.add_argument("--show", action="store_true", help="display predictions")
+    ap.add_argument("--nc", type=int, default=1, help="number of classes")
+    ap.add_argument("--nkpt", type=int, default=17, help="number of keypoints")
+    return ap.parse_args()
 
 
-def load_images(paths: Sequence[str]):
-    frames = []
-    for path in paths:
-        frame = cv2.imread(path)
-        if frame is None:
-            raise FileNotFoundError(f"Failed to read image: {path}")
-        frames.append(frame)
-    return frames
+def letterbox(im: np.ndarray, new_shape: Tuple[int, int]) -> Tuple[np.ndarray, float, Tuple[float, float]]:
+    """Resize and pad image while meeting stride-multiple constraints."""
+    import cv2
+
+    shape = im.shape[:2]  # current shape (h, w)
+    r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])
+    new_unpad = (int(round(shape[1] * r)), int(round(shape[0] * r)))
+    dw, dh = new_shape[1] - new_unpad[0], new_shape[0] - new_unpad[1]
+    dw /= 2
+    dh /= 2
+    if shape[::-1] != new_unpad:
+        im = cv2.resize(im, new_unpad, interpolation=cv2.INTER_LINEAR)
+    top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
+    left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
+    im = cv2.copyMakeBorder(im, top, bottom, left, right, cv2.BORDER_CONSTANT, value=(114, 114, 114))
+    return im, r, (dw, dh)
 
 
-def load_images_from_dir(img_dir: str) -> List[str]:
-    dir_path = Path(img_dir)
-    if not dir_path.exists():
-        raise FileNotFoundError(f"Image directory not found: {img_dir}")
-    image_paths = sorted(
-        str(p)
-        for p in dir_path.iterdir()
-        if p.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp"}
-    )
-    if not image_paths:
-        raise FileNotFoundError(f"No images found in directory: {img_dir}")
-    return image_paths
+def xywh2xyxy(x: np.ndarray) -> np.ndarray:
+    y = np.zeros_like(x)
+    y[:, 0] = x[:, 0] - x[:, 2] / 2
+    y[:, 1] = x[:, 1] - x[:, 3] / 2
+    y[:, 2] = x[:, 0] + x[:, 2] / 2
+    y[:, 3] = x[:, 1] + x[:, 3] / 2
+    return y
 
 
-def chunked(items: List[str], batch_size: int) -> List[List[str]]:
-    return [items[i : i + batch_size] for i in range(0, len(items), batch_size)]
+def nms(boxes: np.ndarray, scores: np.ndarray, iou_thr: float) -> list[int]:
+    """Pure Python NMS."""
+    x1, y1, x2, y2 = boxes.T
+    areas = (x2 - x1) * (y2 - y1)
+    order = scores.argsort()[::-1]
+    keep: list[int] = []
+    while order.size > 0:
+        i = int(order[0])
+        keep.append(i)
+        if order.size == 1:
+            break
+        xx1 = np.maximum(x1[i], x1[order[1:]])
+        yy1 = np.maximum(y1[i], y1[order[1:]])
+        xx2 = np.minimum(x2[i], x2[order[1:]])
+        yy2 = np.minimum(y2[i], y2[order[1:]])
+        w = np.maximum(0.0, xx2 - xx1)
+        h = np.maximum(0.0, yy2 - yy1)
+        inter = w * h
+        ovr = inter / (areas[i] + areas[order[1:]] - inter + 1e-16)
+        inds = np.where(ovr <= iou_thr)[0]
+        order = order[inds + 1]
+    return keep
 
 
-def _draw_pose(
-    image: np.ndarray,
-    boxes: np.ndarray,
-    keypoints: np.ndarray,
-    kpt_conf: np.ndarray | None,
-    conf_thr: float,
-) -> np.ndarray:
-    skeleton = [
-        (0, 1),
-        (0, 2),
-        (1, 3),
-        (2, 4),
-        (0, 5),
-        (0, 6),
-        (5, 7),
-        (7, 9),
-        (6, 8),
-        (8, 10),
-        (5, 6),
-        (5, 11),
-        (6, 12),
-        (11, 12),
-        (11, 13),
-        (13, 15),
-        (12, 14),
-        (14, 16),
-    ]
-    output = image.copy()
-    for box in boxes.astype(int):
-        cv2.rectangle(output, (box[0], box[1]), (box[2], box[3]), (0, 255, 0), 2)
-    if keypoints.size == 0:
-        return output
-    for person_idx, person_kpts in enumerate(keypoints):
-        for kpt_idx, (x, y) in enumerate(person_kpts):
-            if kpt_conf is not None and kpt_conf[person_idx, kpt_idx] < conf_thr:
-                continue
-            cv2.circle(output, (int(x), int(y)), 3, (0, 255, 255), -1)
-        for a, b in skeleton:
-            if kpt_conf is not None:
-                if kpt_conf[person_idx, a] < conf_thr or kpt_conf[person_idx, b] < conf_thr:
-                    continue
-            x1, y1 = person_kpts[a]
-            x2, y2 = person_kpts[b]
-            cv2.line(output, (int(x1), int(y1)), (int(x2), int(y2)), (255, 0, 0), 2)
-    return output
+def load_engine(engine_path: str):
+    import tensorrt as trt
+
+    logger = trt.Logger(trt.Logger.ERROR)
+    with open(engine_path, "rb") as f, trt.Runtime(logger) as rt:
+        engine = rt.deserialize_cuda_engine(f.read())
+    return engine, engine.create_execution_context(), trt
 
 
-def _save_outputs(
-    out_dir: Path,
-    batch_paths: List[str],
-    frames: Sequence[np.ndarray],
-    results,
-    conf_thr: float,
-    batch_idx: int,
-) -> None:
-    out_dir.mkdir(parents=True, exist_ok=True)
-    for idx, (path, frame, res) in enumerate(zip(batch_paths, frames, results)):
-        stem = Path(path).stem
-        if res.keypoints is not None:
-            kpts = res.keypoints.xy
-            kpt_conf = res.keypoints.conf
+def engine_channels(engine, trt_module) -> int:
+    if hasattr(engine, "get_binding_shape"):
+        shape = engine.get_binding_shape(0)
+    else:  # TRT >=10
+        shape = None
+        for i in range(engine.num_io_tensors):
+            name = engine.get_tensor_name(i)
+            if engine.get_tensor_mode(name) == trt_module.TensorIOMode.INPUT:
+                shape = engine.get_tensor_shape(name)
+                break
+        if shape is None:
+            return 3
+    return int(shape[1]) if len(shape) >= 2 else 3
+
+
+def frames_from_source(src: str) -> Iterator[Tuple[np.ndarray, str | None]]:
+    import cv2
+
+    p = Path(src)
+    if p.is_dir():
+        for img_path in sorted(p.iterdir()):
+            img = cv2.imread(str(img_path), cv2.IMREAD_UNCHANGED)
+            if img is not None:
+                yield img, str(img_path.name)
+    elif p.suffix.lower() in {".mp4", ".avi", ".mov", ".mkv", ".mpg", ".mpeg"}:
+        cap = cv2.VideoCapture(str(p))
+        idx = 0
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            yield frame, f"frame{idx:05d}.jpg"
+            idx += 1
+        cap.release()
+    else:
+        img = cv2.imread(str(p), cv2.IMREAD_UNCHANGED)
+        if img is None:
+            raise FileNotFoundError(src)
+        yield img, p.name
+
+
+def infer(
+    engine,
+    context,
+    trt_module,
+    img: np.ndarray,
+    c_dim: int,
+    imgsz: int,
+    conf: float,
+    iou: float,
+    nkpt: int,
+    nc: int,
+):
+    import cv2
+    import pycuda.driver as cuda
+
+    if c_dim == 1 and img.ndim == 3:
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    if c_dim == 3 and img.ndim == 2:
+        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    im0 = img.copy()
+    if im0.ndim == 2:
+        im0 = cv2.cvtColor(im0, cv2.COLOR_GRAY2BGR)
+    img, ratio, (dw, dh) = letterbox(img, (imgsz, imgsz))
+    if c_dim == 1:
+        img = img[..., None]
+    img = img.astype(np.float32) / 255.0
+    img = np.transpose(img, (2, 0, 1))[None]
+
+    if hasattr(context, "set_binding_shape"):
+        context.set_binding_shape(0, img.shape)
+        output_shape = context.get_binding_shape(1)
+        dtype_in = np.float32
+        dtype_out = np.float32
+        bindings = [0] * 2
+        in_idx, out_idx = 0, 1
+        in_name = out_name = None
+    else:  # TRT >=10
+        in_idx = out_idx = None
+        in_name = out_name = None
+        for i in range(context.engine.num_io_tensors):
+            name = context.engine.get_tensor_name(i)
+            mode = context.engine.get_tensor_mode(name)
+            if mode == trt_module.TensorIOMode.INPUT:
+                in_name, in_idx = name, i
+            elif mode == trt_module.TensorIOMode.OUTPUT:
+                out_name, out_idx = name, i
+        assert in_idx is not None and out_idx is not None
+        assert in_name is not None and out_name is not None
+        context.set_input_shape(in_name, img.shape)
+        output_shape = context.get_tensor_shape(out_name)
+        dtype_in = trt_module.nptype(context.engine.get_tensor_dtype(in_name))
+        dtype_out = trt_module.nptype(context.engine.get_tensor_dtype(out_name))
+        bindings = [0] * context.engine.num_io_tensors
+
+    d_input = cuda.mem_alloc(img.nbytes)
+    out_bytes = int(np.prod(output_shape)) * np.dtype(dtype_out).itemsize
+    d_output = cuda.mem_alloc(out_bytes)
+    cuda.memcpy_htod(d_input, img.astype(dtype_in))
+    bindings[in_idx] = int(d_input)
+    bindings[out_idx] = int(d_output)
+    if hasattr(context, "execute_async_v3"):
+        if in_name is not None:
+            context.set_tensor_address(in_name, int(d_input))
+        if out_name is not None:
+            context.set_tensor_address(out_name, int(d_output))
+        context.execute_async_v3(stream_handle=0)
+    else:
+        context.execute_v2(bindings)
+    out = np.empty(output_shape, dtype=dtype_out)
+    cuda.memcpy_dtoh(out, d_output)
+    d_input.free()
+    d_output.free()
+
+    cols = 5 + nc + nkpt * 3
+    if out.size % cols != 0:  # engine may omit class probabilities
+        nc = 0
+        cols = 5 + nkpt * 3
+    if out.ndim == 3:
+        if out.shape[1] == cols:
+            pred = out[0].T
+        elif out.shape[2] == cols:
+            pred = out[0]
         else:
-            kpts = np.zeros((0, 17, 2), dtype=np.float32)
-            kpt_conf = None
-        drawn = _draw_pose(frame, res.boxes, kpts, kpt_conf, conf_thr)
-        out_path = out_dir / f"batch{batch_idx:03d}_{idx:02d}_{stem}.jpg"
-        cv2.imwrite(str(out_path), drawn)
+            pred = out.reshape(-1, cols)
+    else:
+        pred = out.reshape(-1, cols)
+    boxes = pred[:, :4]
+    obj = pred[:, 4]
+    cls = pred[:, 5 : 5 + nc] if nc else np.ones((pred.shape[0], 1), dtype=pred.dtype)
+    kpts = pred[:, 5 + nc :]
+    scores = obj * cls.max(1)
+    keep = scores >= conf
+    boxes, scores, kpts = boxes[keep], scores[keep], kpts[keep]
+    boxes = xywh2xyxy(boxes)
+    boxes -= np.array([dw, dh, dw, dh])
+    boxes /= ratio
+    kpts = kpts.reshape(-1, nkpt, 3)
+    kpts[..., 0] = (kpts[..., 0] - dw) / ratio
+    kpts[..., 1] = (kpts[..., 1] - dh) / ratio
+    keep = nms(boxes, scores, iou)
+    boxes, scores, kpts = boxes[keep], scores[keep], kpts[keep]
+
+    for box, score, kp in zip(boxes, scores, kpts):
+        x1, y1, x2, y2 = map(int, box)
+        cv2.rectangle(im0, (x1, y1), (x2, y2), (255, 0, 0), 1)
+        label = f"{float(score):.2f}"
+        cv2.putText(
+            im0,
+            label,
+            (x1, max(y1 - 2, 0)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.4,
+            (255, 0, 0),
+            1,
+            cv2.LINE_AA,
+        )
+        for x, y, c in kp:
+            if c > 0:
+                cv2.circle(im0, (int(x), int(y)), 2, (54, 172, 245), -1)
+    return im0, boxes, kpts
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--engine", required=True, help="Path to TensorRT engine")
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--img", nargs=3, help="Three image paths")
-    group.add_argument("--img-dir", help="Directory containing images to process in batches of 3")
-    parser.add_argument("--out-dir", default="trt_outputs", help="Directory to save drawn results")
-    parser.add_argument("--imgsz", nargs=2, type=int, default=[640, 640])
-    parser.add_argument("--conf", type=float, default=0.25)
-    parser.add_argument("--iou", type=float, default=0.7)
-    args = parser.parse_args()
+    args = parse_args()
+    import pycuda.driver as cuda
 
-    infer = PoseTRTInfer(args.engine, conf=args.conf, iou=args.iou, imgsz=tuple(args.imgsz))
-    out_dir = Path(args.out_dir)
-    if args.img_dir:
-        image_paths = load_images_from_dir(args.img_dir)
-        batches = chunked(image_paths, 3)
-        if len(batches[-1]) < 3:
-            print(
-                f"[demo] warning: dropping last {len(batches[-1])} image(s) to keep batch=3"
+    cuda.init()
+    dev = cuda.Device(args.device)
+    ctx = dev.make_context()
+    try:
+        import cv2
+
+        engine, context, trt_module = load_engine(args.engine)
+        c_dim = engine_channels(engine, trt_module)
+
+        save_dir = Path("runs/predict")
+        if args.save:
+            save_dir.mkdir(parents=True, exist_ok=True)
+
+        show_ok = args.show and bool(os.environ.get("DISPLAY"))
+        if args.show and not show_ok:
+            print("[WARN] --show requested but DISPLAY is not available; disabling window output.")
+
+        for frame, name in frames_from_source(args.source):
+            im, boxes, kpts = infer(
+                engine, context, trt_module, frame, c_dim, args.imgsz, args.conf, args.iou, args.nkpt, args.nc
             )
-            batches = batches[:-1]
-        for batch_idx, batch_paths in enumerate(batches):
-            frames3 = load_images(batch_paths)
-            results = infer.infer_3in3out(frames3)
-            print(f"[batch {batch_idx}] len(results) = {len(results)}")
-            _save_outputs(out_dir, batch_paths, frames3, results, args.conf, batch_idx)
-            for idx, res in enumerate(results):
-                kpts = res.keypoints
-                kpt_instances = 0
-                kpt_xy_shape = None
-                kpt_conf_shape = None
-                if kpts is not None:
-                    kpt_instances = kpts.xy.shape[0]
-                    kpt_xy_shape = kpts.xy.shape
-                    if kpts.conf is not None:
-                        kpt_conf_shape = kpts.conf.shape
-                print(
-                    f"[{idx}] orig_shape={res.orig_shape}, boxes={res.boxes.shape}, "
-                    f"kpt_instances={kpt_instances}"
-                )
-                if kpt_xy_shape is not None:
-                    print(f"keypoints.xy shape: {kpt_xy_shape}")
-                if kpt_conf_shape is not None:
-                    print(f"keypoints.conf shape: {kpt_conf_shape}")
-    else:
-        frames3 = load_images(args.img)
-        results = infer.infer_3in3out(frames3)
-        print(f"len(results) = {len(results)}")
-        _save_outputs(out_dir, list(args.img), frames3, results, args.conf, 0)
-        for idx, res in enumerate(results):
-            kpts = res.keypoints
-            kpt_instances = 0
-            kpt_xy_shape = None
-            kpt_conf_shape = None
-            if kpts is not None:
-                kpt_instances = kpts.xy.shape[0]
-                kpt_xy_shape = kpts.xy.shape
-                if kpts.conf is not None:
-                    kpt_conf_shape = kpts.conf.shape
-            print(
-                f"[{idx}] orig_shape={res.orig_shape}, boxes={res.boxes.shape}, "
-                f"kpt_instances={kpt_instances}"
-            )
-            if kpt_xy_shape is not None:
-                print(f"keypoints.xy shape: {kpt_xy_shape}")
-            if kpt_conf_shape is not None:
-                print(f"keypoints.conf shape: {kpt_conf_shape}")
+            print("Boxes (xyxy):", boxes.tolist())
+            print("Keypoints (xy):", kpts[..., :2].tolist())
+            if args.save and name is not None:
+                cv2.imwrite(str(save_dir / name), im)
+            if show_ok:
+                try:
+                    cv2.imshow("result", im)
+                    cv2.waitKey(1)
+                except Exception as exc:  # pragma: no cover - GUI dependent
+                    print(f"[WARN] Failed to display window ({exc}); disabling --show output.")
+                    show_ok = False
+    finally:
+        ctx.pop()
+        ctx.detach()
 
 
 if __name__ == "__main__":
