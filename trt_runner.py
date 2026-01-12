@@ -30,10 +30,16 @@ class TrtRunner:
         self.context = self.engine.create_execution_context()
         if self.context is None:
             raise RuntimeError("Failed to create TensorRT execution context")
-        if self.engine.num_optimization_profiles > 0:
-            self.context.active_optimization_profile = profile_index
         cuda.init()
         self.stream = cuda.Stream()
+        if self.engine.num_optimization_profiles > 0:
+            if hasattr(self.context, "set_optimization_profile_async"):
+                self.context.set_optimization_profile_async(profile_index, self.stream.handle)
+            else:
+                try:
+                    self.context.active_optimization_profile = profile_index
+                except AttributeError:
+                    pass
         self.bindings: List[BindingInfo] = []
         for idx in range(self.engine.num_bindings):
             name = self.engine.get_binding_name(idx)

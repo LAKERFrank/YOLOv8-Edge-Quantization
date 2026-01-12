@@ -20,6 +20,7 @@ This stage validates the TensorRT pipeline and prints the required summary to co
 python demo_infer_trt.py \
   --engine path/to/model.engine \
   --img path/to/img1.jpg path/to/img2.jpg path/to/img3.jpg \
+  --out-dir outputs \
   --imgsz 640 640 \
   --conf 0.25 \
   --iou 0.7
@@ -31,6 +32,7 @@ To process an entire folder in batches of 3 images:
 python demo_infer_trt.py \
   --engine path/to/model.engine \
   --img-dir path/to/images \
+  --out-dir outputs \
   --imgsz 640 640 \
   --conf 0.25 \
   --iou 0.7
