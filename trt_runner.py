@@ -3,6 +3,7 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 import tensorrt as trt
+import pycuda.autoinit
 import pycuda.driver as cuda
 
 
