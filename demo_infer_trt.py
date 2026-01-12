@@ -20,16 +20,23 @@ import numpy as np
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="TensorRT pose inference")
     ap.add_argument("--engine", required=True, help="path to TensorRT .engine file")
-    ap.add_argument("--source", required=True, help="image/video path or directory")
+    ap.add_argument("--source", help="image/video path or directory")
+    ap.add_argument("--img-dir", help="directory of images (alias for --source)")
     ap.add_argument("--imgsz", type=int, default=640, help="inference size")
     ap.add_argument("--conf", type=float, default=0.25, help="confidence threshold")
     ap.add_argument("--iou", type=float, default=0.45, help="NMS IoU threshold")
     ap.add_argument("--device", type=int, default=0, help="CUDA device index")
     ap.add_argument("--save", action="store_true", help="save annotated outputs")
+    ap.add_argument("--out-dir", default="runs/predict", help="output directory for saved images")
     ap.add_argument("--show", action="store_true", help="display predictions")
     ap.add_argument("--nc", type=int, default=1, help="number of classes")
     ap.add_argument("--nkpt", type=int, default=17, help="number of keypoints")
-    return ap.parse_args()
+    args = ap.parse_args()
+    if args.img_dir and not args.source:
+        args.source = args.img_dir
+    if not args.source:
+        ap.error("the following arguments are required: --source (or --img-dir)")
+    return args
 
 
 def letterbox(im: np.ndarray, new_shape: Tuple[int, int]) -> Tuple[np.ndarray, float, Tuple[float, float]]:
@@ -268,7 +275,7 @@ def main() -> None:
         engine, context, trt_module = load_engine(args.engine)
         c_dim = engine_channels(engine, trt_module)
 
-        save_dir = Path("runs/predict")
+        save_dir = Path(args.out_dir)
         if args.save:
             save_dir.mkdir(parents=True, exist_ok=True)
 
