@@ -242,6 +242,26 @@ def infer(
     keep = nms(boxes, scores, iou)
     boxes, scores, kpts = boxes[keep], scores[keep], kpts[keep]
 
+    skeleton = [
+        (0, 1),
+        (0, 2),
+        (1, 3),
+        (2, 4),
+        (0, 5),
+        (0, 6),
+        (5, 7),
+        (7, 9),
+        (6, 8),
+        (8, 10),
+        (5, 6),
+        (5, 11),
+        (6, 12),
+        (11, 12),
+        (11, 13),
+        (13, 15),
+        (12, 14),
+        (14, 16),
+    ]
     for box, score, kp in zip(boxes, scores, kpts):
         x1, y1, x2, y2 = map(int, box)
         cv2.rectangle(im0, (x1, y1), (x2, y2), (255, 0, 0), 1)
@@ -259,6 +279,11 @@ def infer(
         for x, y, c in kp:
             if c > 0:
                 cv2.circle(im0, (int(x), int(y)), 2, (54, 172, 245), -1)
+        for a, b in skeleton:
+            if kp[a, 2] > 0 and kp[b, 2] > 0:
+                ax, ay = kp[a, 0], kp[a, 1]
+                bx, by = kp[b, 0], kp[b, 1]
+                cv2.line(im0, (int(ax), int(ay)), (int(bx), int(by)), (0, 255, 0), 1)
     return im0, boxes, kpts
 
 
