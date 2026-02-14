@@ -1,0 +1,11 @@
+# Python cache
+*.pyc
+__pycache__/
+
+# Outputs and artifacts
+artifacts/
+runs/
+out/
+trt_quant/
+ultralytics/
+val/
